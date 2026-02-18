@@ -35,8 +35,9 @@ export class FillerDetector {
   // Detection state
   private voicedStartTime = 0;
   private isVoiced = false;
-  private pitchHistory: number[] = [];
+  private centroidHistory: number[] = [];
   private energyHistory: number[] = [];
+  private flatnessHistory: number[] = [];
   private silenceStartTime = 0;
   private isSilent = false;
   private lastFillerTime = 0; // cooldown
@@ -73,8 +74,9 @@ export class FillerDetector {
     this.silenceStartTime = Date.now();
     this.isSilent = false;
     this.isVoiced = false;
-    this.pitchHistory = [];
+    this.centroidHistory = [];
     this.energyHistory = [];
+    this.flatnessHistory = [];
     this.lastFillerTime = 0;
 
     this.tick();
@@ -126,14 +128,21 @@ export class FillerDetector {
     const arithmeticMean = specSum / specCount;
     const geometricMean = Math.exp(specLogSum / specCount);
     const spectralFlatness = arithmeticMean > 0 ? geometricMean / arithmeticMean : 1;
-    // Lower spectral flatness = more tonal (filler-like)
-    // Higher = more noisy/consonant-rich (normal speech)
 
-    // 3. Estimate dominant frequency
-    const dominantFreq = this.estimateFrequency(timeData, this.audioContext!.sampleRate);
+    // 3. Compute spectral centroid — center of mass of the spectrum
+    //    More stable and reliable than autocorrelation pitch detection
+    let weightedSum = 0;
+    let totalWeight = 0;
+    const sampleRate = this.audioContext!.sampleRate;
+    for (let i = 1; i < bufferLength / 2; i++) {
+      const freq = (i * sampleRate) / (2 * bufferLength);
+      weightedSum += freq * dataArray[i];
+      totalWeight += dataArray[i];
+    }
+    const spectralCentroid = totalWeight > 0 ? weightedSum / totalWeight : 0;
 
-    // 4. Check if sound is voiced — must be moderate volume, in voice range
-    const isCurrentlyVoiced = rms > 0.015 && dominantFreq > 70 && dominantFreq < 350;
+    // 4. Check if sound is voiced — moderate volume + centroid in voice range
+    const isCurrentlyVoiced = rms > 0.012 && spectralCentroid > 100 && spectralCentroid < 2000;
 
     // 5. Silence detection
     if (rms < 0.008) {
@@ -157,58 +166,62 @@ export class FillerDetector {
       this.silenceStartTime = now;
     }
 
-    // 6. Filler detection with strict criteria
+    // 6. Filler detection using spectral centroid stability
     if (isCurrentlyVoiced) {
       if (!this.isVoiced) {
         this.isVoiced = true;
         this.voicedStartTime = now;
-        this.pitchHistory = [dominantFreq];
+        this.centroidHistory = [spectralCentroid];
         this.energyHistory = [rms];
+        this.flatnessHistory = [spectralFlatness];
       } else {
-        this.pitchHistory.push(dominantFreq);
+        this.centroidHistory.push(spectralCentroid);
         this.energyHistory.push(rms);
+        this.flatnessHistory.push(spectralFlatness);
 
-        // Use sliding window of last 15 samples to avoid accumulated noise
+        // Sliding window
         const WINDOW = 15;
-        if (this.pitchHistory.length > WINDOW) {
-          this.pitchHistory = this.pitchHistory.slice(-WINDOW);
+        if (this.centroidHistory.length > WINDOW) {
+          this.centroidHistory = this.centroidHistory.slice(-WINDOW);
           this.energyHistory = this.energyHistory.slice(-WINDOW);
+          this.flatnessHistory = this.flatnessHistory.slice(-WINDOW);
         }
 
         const voicedDuration = now - this.voicedStartTime;
 
-        // Need at least 350ms of data and 6+ samples
-        if (voicedDuration >= this.options.fillerMinDurationMs && this.pitchHistory.length >= 6) {
-          const recentPitch = this.pitchHistory;
-          const avgPitch = recentPitch.reduce((a, b) => a + b, 0) / recentPitch.length;
-          const variance = recentPitch.reduce((a, b) => a + Math.pow(b - avgPitch, 2), 0) / recentPitch.length;
-          const stdDev = Math.sqrt(variance);
-          const coeffOfVariation = stdDev / avgPitch;
+        if (voicedDuration >= this.options.fillerMinDurationMs && this.centroidHistory.length >= 6) {
+          // Spectral centroid stability
+          const avgCentroid = this.centroidHistory.reduce((a, b) => a + b, 0) / this.centroidHistory.length;
+          const centroidVar = this.centroidHistory.reduce((a, b) => a + Math.pow(b - avgCentroid, 2), 0) / this.centroidHistory.length;
+          const centroidCV = avgCentroid > 0 ? Math.sqrt(centroidVar) / avgCentroid : 1;
 
-          const recentEnergy = this.energyHistory;
-          const avgEnergy = recentEnergy.reduce((a, b) => a + b, 0) / recentEnergy.length;
-          const energyVariance = recentEnergy.reduce((a, b) => a + Math.pow(b - avgEnergy, 2), 0) / recentEnergy.length;
-          const energyStdDev = Math.sqrt(energyVariance);
-          const energyCV = avgEnergy > 0 ? energyStdDev / avgEnergy : 1;
+          // Energy stability
+          const avgEnergy = this.energyHistory.reduce((a, b) => a + b, 0) / this.energyHistory.length;
+          const energyVar = this.energyHistory.reduce((a, b) => a + Math.pow(b - avgEnergy, 2), 0) / this.energyHistory.length;
+          const energyCV = avgEnergy > 0 ? Math.sqrt(energyVar) / avgEnergy : 1;
 
-          // Filler detection criteria (relaxed to match real-world audio):
-          // 1. Pitch variation < 0.20 CV — autocorrelation is noisy, real fillers show ~0.1-0.15
-          // 2. Stable energy < 0.40 CV — fillers don't fluctuate much
-          // 3. Tonal quality (spectralFlatness < 0.70) — vowel-like sound
-          // 4. Cooldown: at least 1.5 seconds between detections
+          // Average spectral flatness over window
+          const avgFlatness = this.flatnessHistory.reduce((a, b) => a + b, 0) / this.flatnessHistory.length;
+
+          // Filler criteria:
+          // 1. Stable spectral centroid (CV < 0.15) — fillers have steady timbre
+          // 2. Stable energy (CV < 0.40) — fillers don't fluctuate
+          // 3. Tonal quality (avg flatness < 0.75) — vowel-like
+          // 4. Low centroid (< 800 Hz) — fillers are low-frequency vowels
+          // 5. Cooldown of 1.5s
           const isFiller =
-            coeffOfVariation < 0.20 &&
+            centroidCV < 0.15 &&
             energyCV < 0.40 &&
-            spectralFlatness < 0.70 &&
+            avgFlatness < 0.75 &&
+            avgCentroid < 800 &&
             (now - this.lastFillerTime) > 1500;
 
-          // Debug logging to help tune thresholds
           if (voicedDuration >= this.options.fillerMinDurationMs) {
-            console.log(`[FillerDetector] Voiced ${voicedDuration}ms | pitchCV: ${coeffOfVariation.toFixed(3)} | energyCV: ${energyCV.toFixed(3)} | spectralFlat: ${spectralFlatness.toFixed(3)} | ${isFiller ? '🔴 FILLER' : '✅ speech'}`);
+            console.log(`[FillerDetector] Voiced ${voicedDuration}ms | centroidCV: ${centroidCV.toFixed(3)} | centroid: ${avgCentroid.toFixed(0)}Hz | energyCV: ${energyCV.toFixed(3)} | flatness: ${avgFlatness.toFixed(3)} | ${isFiller ? '🔴 FILLER' : '✅ speech'}`);
           }
 
           if (isFiller) {
-            const label = avgPitch < 140 ? "uh" : avgPitch < 220 ? "um" : "ah";
+            const label = avgCentroid < 300 ? "uh" : avgCentroid < 500 ? "um" : "ah";
 
             this.options.onFiller({
               type: "filler",
@@ -219,57 +232,30 @@ export class FillerDetector {
 
             this.lastFillerTime = now;
             this.isVoiced = false;
-            this.pitchHistory = [];
+            this.centroidHistory = [];
             this.energyHistory = [];
+            this.flatnessHistory = [];
           }
         }
 
-        // If voiced segment is too long (>1.5s), it's definitely speech, not a filler — reset
+        // Too long = speech, not filler
         if (voicedDuration > 1500) {
           this.isVoiced = false;
-          this.pitchHistory = [];
+          this.centroidHistory = [];
           this.energyHistory = [];
+          this.flatnessHistory = [];
         }
       }
     } else {
       if (this.isVoiced) {
         this.isVoiced = false;
-        this.pitchHistory = [];
+        this.centroidHistory = [];
         this.energyHistory = [];
+        this.flatnessHistory = [];
       }
     }
 
     this.rafId = requestAnimationFrame(this.tick);
   };
 
-  private estimateFrequency(timeData: Uint8Array, sampleRate: number): number {
-    const buf = new Float32Array(timeData.length);
-    for (let i = 0; i < timeData.length; i++) {
-      buf[i] = (timeData[i] - 128) / 128;
-    }
-
-    let rms = 0;
-    for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i];
-    rms = Math.sqrt(rms / buf.length);
-    if (rms < 0.01) return 0;
-
-    // Autocorrelation
-    const minLag = Math.floor(sampleRate / 500);
-    const maxLag = Math.floor(sampleRate / 50);
-    let bestCorrelation = 0;
-    let bestLag = minLag;
-
-    for (let lag = minLag; lag < maxLag && lag < buf.length / 2; lag++) {
-      let correlation = 0;
-      for (let i = 0; i < buf.length - lag; i++) {
-        correlation += buf[i] * buf[i + lag];
-      }
-      if (correlation > bestCorrelation) {
-        bestCorrelation = correlation;
-        bestLag = lag;
-      }
-    }
-
-    return sampleRate / bestLag;
-  }
 }
