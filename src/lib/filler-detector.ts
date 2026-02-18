@@ -168,31 +168,38 @@ export class FillerDetector {
         this.pitchHistory.push(dominantFreq);
         this.energyHistory.push(rms);
 
+        // Use sliding window of last 15 samples to avoid accumulated noise
+        const WINDOW = 15;
+        if (this.pitchHistory.length > WINDOW) {
+          this.pitchHistory = this.pitchHistory.slice(-WINDOW);
+          this.energyHistory = this.energyHistory.slice(-WINDOW);
+        }
+
         const voicedDuration = now - this.voicedStartTime;
 
         // Need at least 350ms of data and 6+ samples
         if (voicedDuration >= this.options.fillerMinDurationMs && this.pitchHistory.length >= 6) {
-          const avgPitch = this.pitchHistory.reduce((a, b) => a + b, 0) / this.pitchHistory.length;
-          const variance = this.pitchHistory.reduce((a, b) => a + Math.pow(b - avgPitch, 2), 0) / this.pitchHistory.length;
+          const recentPitch = this.pitchHistory;
+          const avgPitch = recentPitch.reduce((a, b) => a + b, 0) / recentPitch.length;
+          const variance = recentPitch.reduce((a, b) => a + Math.pow(b - avgPitch, 2), 0) / recentPitch.length;
           const stdDev = Math.sqrt(variance);
           const coeffOfVariation = stdDev / avgPitch;
 
-          // Energy stability — fillers have very stable energy too
-          const avgEnergy = this.energyHistory.reduce((a, b) => a + b, 0) / this.energyHistory.length;
-          const energyVariance = this.energyHistory.reduce((a, b) => a + Math.pow(b - avgEnergy, 2), 0) / this.energyHistory.length;
+          const recentEnergy = this.energyHistory;
+          const avgEnergy = recentEnergy.reduce((a, b) => a + b, 0) / recentEnergy.length;
+          const energyVariance = recentEnergy.reduce((a, b) => a + Math.pow(b - avgEnergy, 2), 0) / recentEnergy.length;
           const energyStdDev = Math.sqrt(energyVariance);
           const energyCV = avgEnergy > 0 ? energyStdDev / avgEnergy : 1;
 
-          // Filler detection criteria (balanced):
-          // 1. Low pitch variation (< 0.09 CV) — fillers are monotone, speech varies more
-          // 2. Stable energy (< 0.35 CV) — fillers don't fluctuate in volume
-          // 3. Tonal quality (spectralFlatness < 0.5) — vowel-like, not consonant-heavy
+          // Filler detection criteria (relaxed to match real-world audio):
+          // 1. Pitch variation < 0.20 CV — autocorrelation is noisy, real fillers show ~0.1-0.15
+          // 2. Stable energy < 0.40 CV — fillers don't fluctuate much
+          // 3. Tonal quality (spectralFlatness < 0.70) — vowel-like sound
           // 4. Cooldown: at least 1.5 seconds between detections
-          // Note: NO energy ceiling — fillers can be loud or quiet
           const isFiller =
-            coeffOfVariation < 0.09 &&
-            energyCV < 0.35 &&
-            spectralFlatness < 0.5 &&
+            coeffOfVariation < 0.20 &&
+            energyCV < 0.40 &&
+            spectralFlatness < 0.70 &&
             (now - this.lastFillerTime) > 1500;
 
           // Debug logging to help tune thresholds
