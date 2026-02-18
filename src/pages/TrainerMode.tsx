@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { Play, RotateCcw, Trophy, Zap } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Play, Square, Trophy, Zap, Timer, Star } from "lucide-react";
 import confetti from "canvas-confetti";
 
 const TOPICS = [
@@ -28,89 +29,80 @@ const TOPICS = [
   "How traveling changes your perspective",
 ];
 
-const FILLER_WORDS = ["um", "uh", "like", "you know", "basically", "literally", "actually", "so,", "right,"];
-const DRILL_DURATION = 60;
+const FILLER_WORDS = ["um", "uh", "like", "you know", "basically", "literally", "actually"];
+
+type Difficulty = "beginner" | "intermediate" | "expert";
+
+const DIFFICULTY_CONFIG: Record<Difficulty, { label: string; seconds: number; icon: string; color: string }> = {
+  beginner: { label: "Beginner", seconds: 30, icon: "🌱", color: "bg-success/15 text-success border-success/30" },
+  intermediate: { label: "Intermediate", seconds: 60, icon: "🔥", color: "bg-warning/15 text-warning border-warning/30" },
+  expert: { label: "Expert", seconds: 120, icon: "⚡", color: "bg-destructive/15 text-destructive border-destructive/30" },
+};
 
 export default function TrainerMode() {
-  const [running, setRunning] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(DRILL_DURATION);
+  const [difficulty, setDifficulty] = useState<Difficulty>("beginner");
+  const [state, setState] = useState<"idle" | "running" | "completed">("idle");
+  const [timeLeft, setTimeLeft] = useState(DIFFICULTY_CONFIG.beginner.seconds);
   const [topic, setTopic] = useState(() => TOPICS[Math.floor(Math.random() * TOPICS.length)]);
   const [transcript, setTranscript] = useState("");
-  const [completed, setCompleted] = useState(false);
   const [flash, setFlash] = useState(false);
   const [restarts, setRestarts] = useState(0);
+
   const recognitionRef = useRef<any>(null);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const silenceRef = useRef<NodeJS.Timeout | null>(null);
+  const isListeningRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const silenceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startTimeRef = useRef<number>(0);
   const { toast } = useToast();
+
+  const duration = DIFFICULTY_CONFIG[difficulty].seconds;
 
   const pickNewTopic = () => {
     setTopic(TOPICS[Math.floor(Math.random() * TOPICS.length)]);
   };
 
-  const triggerFlash = () => {
-    setFlash(true);
-    setTimeout(() => setFlash(false), 500);
-  };
-
-  const stopRecognition = useCallback(() => {
+  const cleanup = useCallback(() => {
+    isListeningRef.current = false;
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch {}
       recognitionRef.current = null;
     }
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (silenceRef.current) clearTimeout(silenceRef.current);
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    if (silenceRef.current) { clearTimeout(silenceRef.current); silenceRef.current = null; }
   }, []);
 
-  const restart = useCallback((reason: string) => {
-    stopRecognition();
-    triggerFlash();
-    setRestarts((r) => r + 1);
-    toast({
-      title: "Restarting drill",
-      description: reason,
-      variant: "destructive",
-    });
-    pickNewTopic();
-    setTimeLeft(DRILL_DURATION);
-    setTranscript("");
-    // Restart after a brief pause
-    setTimeout(() => startDrill(), 800);
-  }, [toast, stopRecognition]);
-
   const handleSuccess = useCallback(() => {
-    stopRecognition();
-    setRunning(false);
-    setCompleted(true);
-    confetti({
-      particleCount: 150,
-      spread: 80,
-      origin: { y: 0.6 },
-      colors: ["#3b82f6", "#8b5cf6", "#22c55e"],
-    });
-  }, [stopRecognition]);
+    cleanup();
+    setState("completed");
+    confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 }, colors: ["#58cc02", "#1cb0f6", "#ff9600"] });
+  }, [cleanup]);
+
+  const restartDrill = useCallback((reason: string) => {
+    cleanup();
+    setFlash(true);
+    setTimeout(() => setFlash(false), 500);
+    setRestarts((r) => r + 1);
+    toast({ title: "Restarting drill", description: reason, variant: "destructive" });
+
+    // Reset state but stay in running — user must press Start again
+    pickNewTopic();
+    setTimeLeft(duration);
+    setTranscript("");
+    setState("idle");
+  }, [cleanup, toast, duration]);
 
   const startDrill = useCallback(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      toast({
-        title: "Speech Recognition not supported",
-        description: "Please use Chrome or Edge for this feature.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setRunning(true);
-    setCompleted(false);
+    cleanup();
+    setState("running");
     setTranscript("");
-    setTimeLeft(DRILL_DURATION);
+    setTimeLeft(duration);
+    pickNewTopic();
 
     // Timer
-    const start = Date.now();
+    startTimeRef.current = Date.now();
     timerRef.current = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - start) / 1000);
-      const remaining = DRILL_DURATION - elapsed;
+      const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+      const remaining = duration - elapsed;
       if (remaining <= 0) {
         handleSuccess();
       } else {
@@ -119,20 +111,32 @@ export default function TrainerMode() {
     }, 250);
 
     // Speech Recognition
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      toast({ title: "Speech Recognition not supported", description: "Please use Chrome or Edge.", variant: "destructive" });
+      cleanup();
+      setState("idle");
+      return;
+    }
+
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-US";
     recognitionRef.current = recognition;
+    isListeningRef.current = true;
 
     const resetSilenceTimer = () => {
       if (silenceRef.current) clearTimeout(silenceRef.current);
       silenceRef.current = setTimeout(() => {
-        restart("3-second silence detected — keep speaking!");
+        if (isListeningRef.current) {
+          restartDrill("3-second silence detected — keep speaking!");
+        }
       }, 3000);
     };
 
     recognition.onresult = (event: any) => {
+      if (!isListeningRef.current) return;
       resetSilenceTimer();
       let full = "";
       for (let i = 0; i < event.results.length; i++) {
@@ -143,47 +147,76 @@ export default function TrainerMode() {
       const lower = full.toLowerCase();
       for (const filler of FILLER_WORDS) {
         if (lower.includes(filler)) {
-          restart(`Detected filler word "${filler}"`);
+          restartDrill(`Detected filler word "${filler}"`);
           return;
         }
       }
     };
 
-    recognition.onerror = () => {};
+    recognition.onerror = (event: any) => {
+      if (event.error === "not-allowed") {
+        toast({ title: "Microphone access denied", variant: "destructive" });
+        cleanup();
+        setState("idle");
+      }
+      // "no-speech" is handled by onend restart
+    };
+
     recognition.onend = () => {
-      // Restart recognition if still running
-      if (recognitionRef.current) {
+      if (isListeningRef.current) {
         try { recognition.start(); } catch {}
       }
     };
 
     recognition.start();
     resetSilenceTimer();
-  }, [handleSuccess, restart, toast]);
+  }, [cleanup, duration, handleSuccess, restartDrill, toast]);
 
   useEffect(() => {
-    return () => stopRecognition();
-  }, [stopRecognition]);
+    return () => cleanup();
+  }, [cleanup]);
 
-  const handleStartStop = () => {
-    if (running) {
-      stopRecognition();
-      setRunning(false);
-    } else {
-      pickNewTopic();
-      setRestarts(0);
-      startDrill();
-    }
+  const stopDrill = () => {
+    cleanup();
+    setState("idle");
+    setTimeLeft(duration);
+    setTranscript("");
   };
 
-  const progress = ((DRILL_DURATION - timeLeft) / DRILL_DURATION) * 100;
+  const progress = ((duration - timeLeft) / duration) * 100;
 
   return (
-    <div className={`flex flex-col items-center justify-center min-h-[70vh] gap-8 transition-colors ${flash ? "flash-red" : ""}`}>
-      {/* Topic */}
-      <Card className="glass-card glow-primary w-full max-w-2xl">
+    <div className={`flex flex-col items-center gap-6 pb-8 transition-colors ${flash ? "flash-red" : ""}`}>
+      {/* Difficulty Selector */}
+      <div className="flex gap-3 flex-wrap justify-center">
+        {(Object.keys(DIFFICULTY_CONFIG) as Difficulty[]).map((d) => {
+          const cfg = DIFFICULTY_CONFIG[d];
+          const active = difficulty === d;
+          return (
+            <button
+              key={d}
+              onClick={() => { if (state === "idle") { setDifficulty(d); setTimeLeft(cfg.seconds); } }}
+              disabled={state === "running"}
+              className={`flex items-center gap-2 rounded-2xl border-2 px-5 py-3 text-sm font-semibold transition-all ${
+                active
+                  ? cfg.color + " scale-105 shadow-lg"
+                  : "border-border bg-card text-muted-foreground hover:border-primary/30"
+              } ${state === "running" ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+            >
+              <span className="text-lg">{cfg.icon}</span>
+              <span>{cfg.label}</span>
+              <Badge variant="secondary" className="ml-1 text-[10px]">{cfg.seconds}s</Badge>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Topic Card */}
+      <Card className="glass-card glow-primary w-full max-w-2xl rounded-3xl">
         <CardContent className="flex flex-col items-center gap-4 p-8 text-center">
-          <Zap className="h-8 w-8 text-primary" />
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
+            <Zap className="h-7 w-7 text-primary" />
+          </div>
           <p className="text-xs uppercase tracking-widest text-muted-foreground">Your Topic</p>
           <h2 className="font-display text-2xl font-bold text-foreground sm:text-3xl">
             "{topic}"
@@ -192,9 +225,9 @@ export default function TrainerMode() {
       </Card>
 
       {/* Timer */}
-      {running && (
+      {state === "running" && (
         <div className="flex flex-col items-center gap-2">
-          <div className="relative flex h-28 w-28 items-center justify-center">
+          <div className="relative flex h-32 w-32 items-center justify-center">
             <svg className="absolute h-full w-full -rotate-90" viewBox="0 0 120 120">
               <circle cx="60" cy="60" r="52" fill="none" stroke="hsl(var(--muted))" strokeWidth="8" />
               <circle
@@ -211,44 +244,60 @@ export default function TrainerMode() {
             </svg>
             <span className="font-display text-3xl font-bold text-foreground">{timeLeft}</span>
           </div>
-          <p className="text-sm text-muted-foreground">seconds remaining</p>
+          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <Timer className="h-3.5 w-3.5" />
+            seconds remaining
+          </div>
         </div>
       )}
 
       {/* Completed */}
-      {completed && (
-        <Card className="glass-card glow-success w-full max-w-md">
-          <CardContent className="flex flex-col items-center gap-3 p-6">
-            <Trophy className="h-10 w-10 text-success" />
-            <h3 className="font-display text-xl font-bold text-foreground">Congratulations!</h3>
+      {state === "completed" && (
+        <Card className="glass-card glow-success w-full max-w-md rounded-3xl">
+          <CardContent className="flex flex-col items-center gap-3 p-8">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-success/15">
+              <Trophy className="h-8 w-8 text-success" />
+            </div>
+            <h3 className="font-display text-xl font-bold text-foreground">Amazing! 🎉</h3>
             <p className="text-sm text-muted-foreground text-center">
-              You completed 60 seconds without any filler words!
-              {restarts > 0 && ` It took ${restarts + 1} attempt(s).`}
+              You completed {duration} seconds without any filler words!
             </p>
+            {restarts > 0 && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Star className="h-3.5 w-3.5" />
+                Completed after {restarts + 1} attempt(s)
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
 
       {/* Controls */}
-      <Button
-        size="lg"
-        onClick={handleStartStop}
-        className={running ? "bg-destructive hover:bg-destructive/90" : "glow-primary"}
-      >
-        {running ? (
-          <>
-            <RotateCcw className="mr-2 h-5 w-5" /> Stop Drill
-          </>
+      <div className="flex gap-3">
+        {state === "idle" || state === "completed" ? (
+          <Button
+            size="lg"
+            onClick={() => { setRestarts(0); startDrill(); }}
+            className="glow-primary rounded-2xl px-8 text-base font-bold"
+          >
+            <Play className="mr-2 h-5 w-5" />
+            {state === "completed" ? "Try Again" : `Start ${duration}-Second Drill`}
+          </Button>
         ) : (
-          <>
-            <Play className="mr-2 h-5 w-5" /> Start 60-Second Drill
-          </>
+          <Button
+            size="lg"
+            variant="outline"
+            onClick={stopDrill}
+            className="rounded-2xl px-8 text-base font-bold"
+          >
+            <Square className="mr-2 h-5 w-5" /> Stop
+          </Button>
         )}
-      </Button>
+      </div>
 
       {/* Live Transcript */}
-      {running && transcript && (
-        <Card className="glass-card w-full max-w-2xl">
+      {state === "running" && transcript && (
+        <Card className="glass-card w-full max-w-2xl rounded-2xl">
           <CardContent className="p-4">
             <p className="text-xs uppercase tracking-widest text-muted-foreground mb-2">Live Transcript</p>
             <p className="text-sm text-secondary-foreground leading-relaxed">{transcript}</p>

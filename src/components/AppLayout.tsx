@@ -10,16 +10,17 @@ import {
   MicOff,
   ChevronLeft,
   ChevronRight,
-  Sparkles,
+  Flame,
+  Star,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 
 const navItems = [
   { title: "Dashboard", url: "/", icon: BarChart3 },
-  { title: "Trainer Mode", url: "/trainer", icon: Zap },
+  { title: "Trainer", url: "/trainer", icon: Zap },
   { title: "Teleprompter", url: "/teleprompter", icon: Monitor },
-  { title: "Micro-Lessons", url: "/lessons", icon: BookOpen },
+  { title: "Lessons", url: "/lessons", icon: BookOpen },
 ];
 
 interface AppLayoutProps {
@@ -41,7 +42,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true });
       setMicEnabled(true);
-      toast({ title: "Microphone enabled", description: "Ready to capture speech" });
+      toast({ title: "Microphone enabled ✅", description: "Ready to capture speech" });
     } catch {
       toast({
         title: "Microphone access denied",
@@ -56,26 +57,37 @@ export default function AppLayout({ children }: AppLayoutProps) {
       {/* Sidebar */}
       <aside
         className={`fixed left-0 top-0 z-40 flex h-full flex-col border-r border-border bg-sidebar transition-all duration-300 ${
-          collapsed ? "w-16" : "w-60"
+          collapsed ? "w-16" : "w-56"
         }`}
       >
-        <div className="flex h-16 items-center gap-2 border-b border-sidebar-border px-4">
-          <Sparkles className="h-6 w-6 shrink-0 text-primary" />
+        {/* Logo */}
+        <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-4">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/15">
+            <Flame className="h-5 w-5 text-primary" />
+          </div>
           {!collapsed && (
-            <span className="font-display text-lg font-bold text-foreground">
+            <span className="text-lg font-extrabold text-foreground tracking-tight">
               SpeakFlow
             </span>
           )}
         </div>
 
-        <nav className="flex-1 space-y-1 p-3">
+        {/* Streak badge */}
+        {!collapsed && (
+          <div className="mx-3 mt-3 flex items-center gap-2 rounded-2xl bg-warning/10 px-3 py-2">
+            <Star className="h-4 w-4 text-warning" />
+            <span className="text-xs font-bold text-warning">7 day streak!</span>
+          </div>
+        )}
+
+        <nav className="flex-1 space-y-1 p-3 mt-1">
           {navItems.map((item) => (
             <NavLink
               key={item.url}
               to={item.url}
               end={item.url === "/"}
-              className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              activeClassName="bg-primary/10 text-primary font-medium glow-primary"
+              className="flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm font-semibold text-sidebar-foreground transition-all hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:scale-[1.02]"
+              activeClassName="bg-primary/10 text-primary glow-primary"
             >
               <item.icon className="h-5 w-5 shrink-0" />
               {!collapsed && <span>{item.title}</span>}
@@ -88,7 +100,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
             variant="ghost"
             size="icon"
             onClick={() => setCollapsed(!collapsed)}
-            className="w-full text-sidebar-foreground hover:bg-sidebar-accent"
+            className="w-full text-sidebar-foreground hover:bg-sidebar-accent rounded-xl"
           >
             {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
           </Button>
@@ -98,12 +110,12 @@ export default function AppLayout({ children }: AppLayoutProps) {
       {/* Main content */}
       <div
         className={`flex flex-1 flex-col transition-all duration-300 ${
-          collapsed ? "ml-16" : "ml-60"
+          collapsed ? "ml-16" : "ml-56"
         }`}
       >
         {/* Header */}
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border bg-background/80 backdrop-blur-xl px-6">
-          <h2 className="font-display text-lg font-semibold text-foreground">
+        <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-background/80 backdrop-blur-xl px-6">
+          <h2 className="text-base font-extrabold text-foreground">
             {navItems.find((n) => {
               if (n.url === "/") return location.pathname === "/";
               return location.pathname.startsWith(n.url);
@@ -114,7 +126,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
             variant={micEnabled ? "default" : "outline"}
             size="sm"
             onClick={toggleMic}
-            className={micEnabled ? "glow-primary" : ""}
+            className={`rounded-xl font-bold ${micEnabled ? "glow-primary" : ""}`}
           >
             {micEnabled ? <Mic className="mr-2 h-4 w-4" /> : <MicOff className="mr-2 h-4 w-4" />}
             {micEnabled ? "Mic On" : "Mic Off"}
