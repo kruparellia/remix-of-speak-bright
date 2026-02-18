@@ -170,8 +170,8 @@ export class FillerDetector {
 
         const voicedDuration = now - this.voicedStartTime;
 
-        // Need at least 500ms of data and 10+ samples
-        if (voicedDuration >= this.options.fillerMinDurationMs && this.pitchHistory.length >= 10) {
+        // Need at least 350ms of data and 6+ samples
+        if (voicedDuration >= this.options.fillerMinDurationMs && this.pitchHistory.length >= 6) {
           const avgPitch = this.pitchHistory.reduce((a, b) => a + b, 0) / this.pitchHistory.length;
           const variance = this.pitchHistory.reduce((a, b) => a + Math.pow(b - avgPitch, 2), 0) / this.pitchHistory.length;
           const stdDev = Math.sqrt(variance);
@@ -183,18 +183,22 @@ export class FillerDetector {
           const energyStdDev = Math.sqrt(energyVariance);
           const energyCV = avgEnergy > 0 ? energyStdDev / avgEnergy : 1;
 
-          // Strict criteria for filler detection:
-          // 1. Very low pitch variation (< 0.05 CV) — fillers are extremely monotone
-          // 2. Low energy variation (< 0.3 CV) — fillers have steady volume
-          // 3. Tonal quality (spectralFlatness < 0.4) — fillers are vowel-like
-          // 4. Moderate-low volume — fillers tend to be quieter than articulated speech
-          // 5. Cooldown: at least 2 seconds between detections
+          // Filler detection criteria (balanced):
+          // 1. Low pitch variation (< 0.09 CV) — fillers are monotone, speech varies more
+          // 2. Stable energy (< 0.35 CV) — fillers don't fluctuate in volume
+          // 3. Tonal quality (spectralFlatness < 0.5) — vowel-like, not consonant-heavy
+          // 4. Cooldown: at least 1.5 seconds between detections
+          // Note: NO energy ceiling — fillers can be loud or quiet
           const isFiller =
-            coeffOfVariation < 0.05 &&
-            energyCV < 0.3 &&
-            spectralFlatness < 0.4 &&
-            avgEnergy < 0.15 &&
-            (now - this.lastFillerTime) > 2000;
+            coeffOfVariation < 0.09 &&
+            energyCV < 0.35 &&
+            spectralFlatness < 0.5 &&
+            (now - this.lastFillerTime) > 1500;
+
+          // Debug logging to help tune thresholds
+          if (voicedDuration >= this.options.fillerMinDurationMs) {
+            console.log(`[FillerDetector] Voiced ${voicedDuration}ms | pitchCV: ${coeffOfVariation.toFixed(3)} | energyCV: ${energyCV.toFixed(3)} | spectralFlat: ${spectralFlatness.toFixed(3)} | ${isFiller ? '🔴 FILLER' : '✅ speech'}`);
+          }
 
           if (isFiller) {
             const label = avgPitch < 140 ? "uh" : avgPitch < 220 ? "um" : "ah";
