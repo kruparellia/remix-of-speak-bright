@@ -205,15 +205,15 @@ export class FillerDetector {
 
           // Filler criteria:
           // 1. Stable spectral centroid (CV < 0.15) — fillers have steady timbre
-          // 2. Stable energy (CV < 0.40) — fillers don't fluctuate
+          // 2. Stable energy (CV < 0.45) — fillers don't fluctuate
           // 3. Tonal quality (avg flatness < 0.75) — vowel-like
-          // 4. Low centroid (< 800 Hz) — fillers are low-frequency vowels
+          // 4. Centroid < 2000 Hz — fillers are vowel sounds, not sibilants
           // 5. Cooldown of 1.5s
           const isFiller =
             centroidCV < 0.15 &&
-            energyCV < 0.40 &&
+            energyCV < 0.45 &&
             avgFlatness < 0.75 &&
-            avgCentroid < 800 &&
+            avgCentroid < 2000 &&
             (now - this.lastFillerTime) > 1500;
 
           if (voicedDuration >= this.options.fillerMinDurationMs) {
@@ -221,7 +221,7 @@ export class FillerDetector {
           }
 
           if (isFiller) {
-            const label = avgCentroid < 300 ? "uh" : avgCentroid < 500 ? "um" : "ah";
+            const label = avgCentroid < 500 ? "uh" : avgCentroid < 1000 ? "um" : "ah";
 
             this.options.onFiller({
               type: "filler",
