@@ -1,10 +1,20 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, Trophy, Zap, Timer, Star } from "lucide-react";
+import { Play, Square, Trophy, Zap, Timer, Star, Gauge, MessageSquare, BarChart3, RotateCcw } from "lucide-react";
 import confetti from "canvas-confetti";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
 
 const TOPICS = [
   "The future of remote work",
@@ -39,6 +49,39 @@ const DIFFICULTY_CONFIG: Record<Difficulty, { label: string; seconds: number; ic
   expert: { label: "Expert", seconds: 120, icon: "⚡", color: "bg-destructive/15 text-destructive border-destructive/30" },
 };
 
+interface DrillStats {
+  wordCount: number;
+  durationSeconds: number;
+  wpm: number;
+  fillerWordsUsed: Record<string, number>;
+  totalFillers: number;
+  clarityScore: number;
+  transcript: string;
+}
+
+function computeStats(transcript: string, elapsedSeconds: number): DrillStats {
+  const words = transcript.trim().split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+  const wpm = elapsedSeconds > 0 ? Math.round((wordCount / elapsedSeconds) * 60) : 0;
+
+  const lower = transcript.toLowerCase();
+  const fillerWordsUsed: Record<string, number> = {};
+  let totalFillers = 0;
+  for (const filler of FILLER_WORDS) {
+    const regex = new RegExp(`\\b${filler.replace(/ /g, "\\s+")}\\b`, "gi");
+    const matches = lower.match(regex);
+    if (matches && matches.length > 0) {
+      fillerWordsUsed[filler] = matches.length;
+      totalFillers += matches.length;
+    }
+  }
+
+  const fillerRatio = wordCount > 0 ? totalFillers / wordCount : 0;
+  const clarityScore = Math.max(0, Math.min(100, Math.round(100 - fillerRatio * 500)));
+
+  return { wordCount, durationSeconds: elapsedSeconds, wpm, fillerWordsUsed, totalFillers, clarityScore, transcript };
+}
+
 export default function TrainerMode() {
   const [difficulty, setDifficulty] = useState<Difficulty>("beginner");
   const [state, setState] = useState<"idle" | "running" | "completed">("idle");
@@ -47,12 +90,14 @@ export default function TrainerMode() {
   const [transcript, setTranscript] = useState("");
   const [flash, setFlash] = useState(false);
   const [restarts, setRestarts] = useState(0);
+  const [drillStats, setDrillStats] = useState<DrillStats | null>(null);
 
   const recognitionRef = useRef<any>(null);
   const isListeningRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const silenceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startTimeRef = useRef<number>(0);
+  const transcriptRef = useRef("");
   const { toast } = useToast();
 
   const duration = DIFFICULTY_CONFIG[difficulty].seconds;
@@ -72,33 +117,43 @@ export default function TrainerMode() {
   }, []);
 
   const handleSuccess = useCallback(() => {
+    const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
     cleanup();
+    const stats = computeStats(transcriptRef.current, elapsed);
+    setDrillStats(stats);
     setState("completed");
     confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 }, colors: ["#58cc02", "#1cb0f6", "#ff9600"] });
   }, [cleanup]);
 
   const restartDrill = useCallback((reason: string) => {
+    const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
     cleanup();
     setFlash(true);
     setTimeout(() => setFlash(false), 500);
     setRestarts((r) => r + 1);
+
+    // Compute stats for the failed attempt
+    const stats = computeStats(transcriptRef.current, elapsed);
+    setDrillStats(stats);
+
     toast({ title: "Restarting drill", description: reason, variant: "destructive" });
 
-    // Reset state but stay in running — user must press Start again
     pickNewTopic();
     setTimeLeft(duration);
     setTranscript("");
-    setState("idle");
+    transcriptRef.current = "";
+    setState("completed"); // Show stats instead of going straight to idle
   }, [cleanup, toast, duration]);
 
   const startDrill = useCallback(() => {
     cleanup();
     setState("running");
     setTranscript("");
+    transcriptRef.current = "";
+    setDrillStats(null);
     setTimeLeft(duration);
     pickNewTopic();
 
-    // Timer
     startTimeRef.current = Date.now();
     timerRef.current = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
@@ -110,7 +165,6 @@ export default function TrainerMode() {
       }
     }, 250);
 
-    // Speech Recognition
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
       toast({ title: "Speech Recognition not supported", description: "Please use Chrome or Edge.", variant: "destructive" });
@@ -143,6 +197,7 @@ export default function TrainerMode() {
         full += event.results[i][0].transcript;
       }
       setTranscript(full);
+      transcriptRef.current = full;
 
       const lower = full.toLowerCase();
       for (const filler of FILLER_WORDS) {
@@ -159,7 +214,6 @@ export default function TrainerMode() {
         cleanup();
         setState("idle");
       }
-      // "no-speech" is handled by onend restart
     };
 
     recognition.onend = () => {
@@ -181,48 +235,59 @@ export default function TrainerMode() {
     setState("idle");
     setTimeLeft(duration);
     setTranscript("");
+    transcriptRef.current = "";
   };
 
   const progress = ((duration - timeLeft) / duration) * 100;
 
+  const fillerChartData = drillStats
+    ? Object.entries(drillStats.fillerWordsUsed).map(([word, count]) => ({ word, count }))
+    : [];
+
+  const wasSuccessful = drillStats && drillStats.totalFillers === 0 && drillStats.durationSeconds >= duration;
+
   return (
     <div className={`flex flex-col items-center gap-6 pb-8 transition-colors ${flash ? "flash-red" : ""}`}>
       {/* Difficulty Selector */}
-      <div className="flex gap-3 flex-wrap justify-center">
-        {(Object.keys(DIFFICULTY_CONFIG) as Difficulty[]).map((d) => {
-          const cfg = DIFFICULTY_CONFIG[d];
-          const active = difficulty === d;
-          return (
-            <button
-              key={d}
-              onClick={() => { if (state === "idle") { setDifficulty(d); setTimeLeft(cfg.seconds); } }}
-              disabled={state === "running"}
-              className={`flex items-center gap-2 rounded-2xl border-2 px-5 py-3 text-sm font-semibold transition-all ${
-                active
-                  ? cfg.color + " scale-105 shadow-lg"
-                  : "border-border bg-card text-muted-foreground hover:border-primary/30"
-              } ${state === "running" ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
-            >
-              <span className="text-lg">{cfg.icon}</span>
-              <span>{cfg.label}</span>
-              <Badge variant="secondary" className="ml-1 text-[10px]">{cfg.seconds}s</Badge>
-            </button>
-          );
-        })}
-      </div>
+      {state !== "completed" && (
+        <div className="flex gap-3 flex-wrap justify-center">
+          {(Object.keys(DIFFICULTY_CONFIG) as Difficulty[]).map((d) => {
+            const cfg = DIFFICULTY_CONFIG[d];
+            const active = difficulty === d;
+            return (
+              <button
+                key={d}
+                onClick={() => { if (state === "idle") { setDifficulty(d); setTimeLeft(cfg.seconds); } }}
+                disabled={state === "running"}
+                className={`flex items-center gap-2 rounded-2xl border-2 px-5 py-3 text-sm font-semibold transition-all ${
+                  active
+                    ? cfg.color + " scale-105 shadow-lg"
+                    : "border-border bg-card text-muted-foreground hover:border-primary/30"
+                } ${state === "running" ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+              >
+                <span className="text-lg">{cfg.icon}</span>
+                <span>{cfg.label}</span>
+                <Badge variant="secondary" className="ml-1 text-[10px]">{cfg.seconds}s</Badge>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
-      {/* Topic Card */}
-      <Card className="glass-card glow-primary w-full max-w-2xl rounded-3xl">
-        <CardContent className="flex flex-col items-center gap-4 p-8 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
-            <Zap className="h-7 w-7 text-primary" />
-          </div>
-          <p className="text-xs uppercase tracking-widest text-muted-foreground">Your Topic</p>
-          <h2 className="font-display text-2xl font-bold text-foreground sm:text-3xl">
-            "{topic}"
-          </h2>
-        </CardContent>
-      </Card>
+      {/* Topic Card — show in idle and running */}
+      {state !== "completed" && (
+        <Card className="glass-card glow-primary w-full max-w-2xl rounded-3xl">
+          <CardContent className="flex flex-col items-center gap-4 p-8 text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
+              <Zap className="h-7 w-7 text-primary" />
+            </div>
+            <p className="text-xs uppercase tracking-widest text-muted-foreground">Your Topic</p>
+            <h2 className="text-2xl font-extrabold text-foreground sm:text-3xl">
+              "{topic}"
+            </h2>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Timer */}
       {state === "running" && (
@@ -242,7 +307,7 @@ export default function TrainerMode() {
                 className="transition-all duration-300"
               />
             </svg>
-            <span className="font-display text-3xl font-bold text-foreground">{timeLeft}</span>
+            <span className="text-3xl font-extrabold text-foreground">{timeLeft}</span>
           </div>
           <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
             <Timer className="h-3.5 w-3.5" />
@@ -251,25 +316,131 @@ export default function TrainerMode() {
         </div>
       )}
 
-      {/* Completed */}
-      {state === "completed" && (
-        <Card className="glass-card glow-success w-full max-w-md rounded-3xl">
-          <CardContent className="flex flex-col items-center gap-3 p-8">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-success/15">
-              <Trophy className="h-8 w-8 text-success" />
-            </div>
-            <h3 className="font-display text-xl font-bold text-foreground">Amazing! 🎉</h3>
-            <p className="text-sm text-muted-foreground text-center">
-              You completed {duration} seconds without any filler words!
-            </p>
-            {restarts > 0 && (
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Star className="h-3.5 w-3.5" />
-                Completed after {restarts + 1} attempt(s)
+      {/* ===== POST-DRILL SUMMARY ===== */}
+      {state === "completed" && drillStats && (
+        <div className="w-full max-w-2xl space-y-4">
+          {/* Header */}
+          <Card className={`glass-card w-full rounded-3xl ${wasSuccessful ? "glow-success" : "glow-accent"}`}>
+            <CardContent className="flex flex-col items-center gap-3 p-8">
+              <div className={`flex h-16 w-16 items-center justify-center rounded-full ${wasSuccessful ? "bg-success/15" : "bg-accent/15"}`}>
+                {wasSuccessful
+                  ? <Trophy className="h-8 w-8 text-success" />
+                  : <RotateCcw className="h-8 w-8 text-accent" />
+                }
               </div>
-            )}
-          </CardContent>
-        </Card>
+              <h3 className="text-xl font-extrabold text-foreground">
+                {wasSuccessful ? "Amazing! 🎉" : "Almost there! 💪"}
+              </h3>
+              <p className="text-sm text-muted-foreground text-center">
+                {wasSuccessful
+                  ? `You completed ${duration} seconds filler-free!`
+                  : `You were stopped after ${drillStats.durationSeconds}s. Review your stats and try again.`
+                }
+              </p>
+              {restarts > 0 && (
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Star className="h-3.5 w-3.5" />
+                  {wasSuccessful ? `Completed after ${restarts + 1} attempt(s)` : `${restarts} restart(s) so far`}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Stats Cards */}
+          <div className="grid gap-3 grid-cols-2 sm:grid-cols-4">
+            <Card className="glass-card rounded-2xl">
+              <CardContent className="flex flex-col items-center gap-1 p-4">
+                <Gauge className="h-5 w-5 text-primary" />
+                <span className="text-2xl font-extrabold text-foreground">{drillStats.wpm}</span>
+                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">WPM</span>
+              </CardContent>
+            </Card>
+            <Card className="glass-card rounded-2xl">
+              <CardContent className="flex flex-col items-center gap-1 p-4">
+                <MessageSquare className="h-5 w-5 text-accent" />
+                <span className="text-2xl font-extrabold text-foreground">{drillStats.wordCount}</span>
+                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Words</span>
+              </CardContent>
+            </Card>
+            <Card className="glass-card rounded-2xl">
+              <CardContent className="flex flex-col items-center gap-1 p-4">
+                <BarChart3 className="h-5 w-5 text-warning" />
+                <span className="text-2xl font-extrabold text-foreground">{drillStats.totalFillers}</span>
+                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Fillers</span>
+              </CardContent>
+            </Card>
+            <Card className="glass-card rounded-2xl">
+              <CardContent className="flex flex-col items-center gap-1 p-4">
+                <Star className="h-5 w-5 text-success" />
+                <span className="text-2xl font-extrabold text-foreground">{drillStats.clarityScore}</span>
+                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Clarity</span>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* WPM Gauge */}
+          <Card className="glass-card rounded-2xl">
+            <CardContent className="p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-bold text-foreground flex items-center gap-2">
+                  <Gauge className="h-4 w-4 text-primary" /> Speaking Pace
+                </span>
+                <span className="text-sm text-muted-foreground">{drillStats.wpm} WPM</span>
+              </div>
+              <Progress value={Math.min(100, (drillStats.wpm / 200) * 100)} className="h-3" />
+              <div className="flex justify-between text-[10px] uppercase tracking-widest text-muted-foreground">
+                <span>Too Slow (&lt;100)</span>
+                <span className="text-success font-bold">Ideal (120-160)</span>
+                <span>Too Fast (&gt;180)</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {drillStats.wpm < 100
+                  ? "Try speaking a bit faster. Aim for 120-160 WPM for natural conversation."
+                  : drillStats.wpm > 180
+                  ? "You're speaking quite fast. Try slowing down to let your points land."
+                  : "Great pace! You're in the ideal range for clear communication."
+                }
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Filler Words Chart */}
+          {fillerChartData.length > 0 && (
+            <Card className="glass-card rounded-2xl">
+              <CardContent className="p-5 space-y-3">
+                <span className="text-sm font-bold text-foreground flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4 text-accent" /> Filler Words Detected
+                </span>
+                <ResponsiveContainer width="100%" height={160}>
+                  <BarChart data={fillerChartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="word" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} allowDecimals={false} />
+                    <Tooltip
+                      contentStyle={{
+                        background: "hsl(var(--card))",
+                        border: "1px solid hsl(var(--border))",
+                        borderRadius: "12px",
+                        color: "hsl(var(--foreground))",
+                      }}
+                    />
+                    <Bar dataKey="count" fill="hsl(var(--accent))" radius={[8, 8, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Transcript */}
+          {drillStats.transcript && (
+            <Card className="glass-card rounded-2xl">
+              <CardContent className="p-5 space-y-2">
+                <span className="text-sm font-bold text-foreground">Your Transcript</span>
+                <p className="text-sm text-secondary-foreground leading-relaxed">{drillStats.transcript}</p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       )}
 
       {/* Controls */}
@@ -277,7 +448,7 @@ export default function TrainerMode() {
         {state === "idle" || state === "completed" ? (
           <Button
             size="lg"
-            onClick={() => { setRestarts(0); startDrill(); }}
+            onClick={() => { setRestarts(state === "completed" ? restarts : 0); startDrill(); }}
             className="glow-primary rounded-2xl px-8 text-base font-bold"
           >
             <Play className="mr-2 h-5 w-5" />
