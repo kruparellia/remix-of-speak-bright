@@ -183,7 +183,7 @@ export default function TrainerMode() {
 
     // === Audio-based filler detector ===
     const detector = new FillerDetector({
-      fillerMinDurationMs: 500,
+      fillerMinDurationMs: 350,
       silenceThresholdMs: 3000,
       onFiller: (event: FillerEvent) => {
         if (stoppedRef.current) return;
