@@ -6,6 +6,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Play, Square, Trophy, Zap, Timer, Star, Gauge, MessageSquare, BarChart3, RotateCcw, Pause } from "lucide-react";
 import confetti from "canvas-confetti";
+import { FillerDetector, type FillerEvent } from "@/lib/filler-detector";
 import {
   BarChart,
   Bar,
@@ -39,20 +40,6 @@ const TOPICS = [
   "How traveling changes your perspective",
 ];
 
-// Filler patterns to detect in interim results (before the API cleans them)
-const FILLER_PATTERNS = [
-  { pattern: /\b(um+|umm+)\b/gi, label: "um" },
-  { pattern: /\b(uh+|uhh+)\b/gi, label: "uh" },
-  { pattern: /\b(ah+|ahh+)\b/gi, label: "ah" },
-  { pattern: /\b(er+|err+)\b/gi, label: "er" },
-  { pattern: /\b(hmm+)\b/gi, label: "hmm" },
-  { pattern: /\blike\b/gi, label: "like" },
-  { pattern: /\byou know\b/gi, label: "you know" },
-  { pattern: /\bbasically\b/gi, label: "basically" },
-  { pattern: /\bliterally\b/gi, label: "literally" },
-  { pattern: /\bactually\b/gi, label: "actually" },
-];
-
 type Difficulty = "beginner" | "intermediate" | "expert";
 
 const DIFFICULTY_CONFIG: Record<Difficulty, { label: string; seconds: number; icon: string; color: string }> = {
@@ -64,7 +51,7 @@ const DIFFICULTY_CONFIG: Record<Difficulty, { label: string; seconds: number; ic
 interface TranscriptSegment {
   type: "speech" | "filler" | "pause";
   text: string;
-  timestamp: number; // seconds from start
+  timestamp: number;
 }
 
 interface DrillStats {
@@ -76,21 +63,6 @@ interface DrillStats {
   pauseCount: number;
   clarityScore: number;
   segments: TranscriptSegment[];
-  rawTranscript: string;
-}
-
-function detectFillers(text: string): { found: boolean; fillers: Record<string, number> } {
-  const fillers: Record<string, number> = {};
-  let found = false;
-  for (const { pattern, label } of FILLER_PATTERNS) {
-    pattern.lastIndex = 0;
-    const matches = text.match(pattern);
-    if (matches && matches.length > 0) {
-      fillers[label] = (fillers[label] || 0) + matches.length;
-      found = true;
-    }
-  }
-  return { found, fillers };
 }
 
 export default function TrainerMode() {
@@ -102,37 +74,39 @@ export default function TrainerMode() {
   const [flash, setFlash] = useState(false);
   const [restarts, setRestarts] = useState(0);
   const [drillStats, setDrillStats] = useState<DrillStats | null>(null);
+  const [fillerAlert, setFillerAlert] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
   const isListeningRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const silenceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startTimeRef = useRef<number>(0);
-  const lastSpeechTimeRef = useRef<number>(0);
+  const fillerDetectorRef = useRef<FillerDetector | null>(null);
 
-  // Accumulated data refs
+  // Accumulated data
   const segmentsRef = useRef<TranscriptSegment[]>([]);
   const fillerCountRef = useRef<Record<string, number>>({});
   const totalFillersRef = useRef(0);
   const pauseCountRef = useRef(0);
   const finalizedTextRef = useRef("");
-  const lastInterimRef = useRef("");
+  const stoppedRef = useRef(false);
 
   const { toast } = useToast();
   const duration = DIFFICULTY_CONFIG[difficulty].seconds;
 
-  const pickNewTopic = () => {
-    setTopic(TOPICS[Math.floor(Math.random() * TOPICS.length)]);
-  };
+  const pickNewTopic = () => setTopic(TOPICS[Math.floor(Math.random() * TOPICS.length)]);
 
   const cleanup = useCallback(() => {
     isListeningRef.current = false;
+    stoppedRef.current = true;
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch {}
       recognitionRef.current = null;
     }
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    if (silenceRef.current) { clearTimeout(silenceRef.current); silenceRef.current = null; }
+    if (fillerDetectorRef.current) {
+      fillerDetectorRef.current.stop();
+      fillerDetectorRef.current = null;
+    }
   }, []);
 
   const buildStats = useCallback((): DrillStats => {
@@ -155,78 +129,90 @@ export default function TrainerMode() {
       pauseCount: pauseCountRef.current,
       clarityScore,
       segments: [...segmentsRef.current],
-      rawTranscript: raw,
     };
   }, []);
 
-  const handleSuccess = useCallback(() => {
+  const finishDrill = useCallback((success: boolean, reason?: string) => {
+    if (stoppedRef.current) return;
     cleanup();
-    const stats = buildStats();
-    setDrillStats(stats);
-    setState("completed");
-    confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 }, colors: ["#58cc02", "#1cb0f6", "#ff9600"] });
-  }, [cleanup, buildStats]);
 
-  const restartDrill = useCallback((reason: string, fillerWord?: string) => {
-    cleanup();
-    setFlash(true);
-    setTimeout(() => setFlash(false), 500);
-    setRestarts((r) => r + 1);
-
-    if (fillerWord) {
-      // Add filler to segments
-      const ts = Math.floor((Date.now() - startTimeRef.current) / 1000);
-      segmentsRef.current.push({ type: "filler", text: fillerWord, timestamp: ts });
-      fillerCountRef.current[fillerWord] = (fillerCountRef.current[fillerWord] || 0) + 1;
-      totalFillersRef.current += 1;
+    if (!success && reason) {
+      setFlash(true);
+      setTimeout(() => setFlash(false), 500);
+      setRestarts((r) => r + 1);
+      toast({ title: "Drill stopped", description: reason, variant: "destructive" });
     }
 
     const stats = buildStats();
     setDrillStats(stats);
-
-    toast({ title: "Drill stopped", description: reason, variant: "destructive" });
-
-    pickNewTopic();
-    setTimeLeft(duration);
-    setLiveTranscript("");
     setState("completed");
-  }, [cleanup, toast, duration, buildStats]);
 
-  const addPause = useCallback(() => {
-    const ts = Math.floor((Date.now() - startTimeRef.current) / 1000);
-    segmentsRef.current.push({ type: "pause", text: "[pause]", timestamp: ts });
-    pauseCountRef.current += 1;
-  }, []);
+    if (success) {
+      confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 }, colors: ["#58cc02", "#1cb0f6", "#ff9600"] });
+    }
+  }, [cleanup, buildStats, toast]);
 
   const startDrill = useCallback(() => {
     cleanup();
+    stoppedRef.current = false;
     setState("running");
     setLiveTranscript("");
     setDrillStats(null);
+    setFillerAlert(null);
     setTimeLeft(duration);
     pickNewTopic();
 
-    // Reset accumulated data
     segmentsRef.current = [];
     fillerCountRef.current = {};
     totalFillersRef.current = 0;
     pauseCountRef.current = 0;
     finalizedTextRef.current = "";
-    lastInterimRef.current = "";
 
     startTimeRef.current = Date.now();
-    lastSpeechTimeRef.current = Date.now();
 
+    // Timer
     timerRef.current = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
       const remaining = duration - elapsed;
       if (remaining <= 0) {
-        handleSuccess();
+        finishDrill(true);
       } else {
         setTimeLeft(remaining);
       }
     }, 250);
 
+    // === Audio-based filler detector ===
+    const detector = new FillerDetector({
+      fillerMinDurationMs: 300,
+      silenceThresholdMs: 3000,
+      onFiller: (event: FillerEvent) => {
+        if (stoppedRef.current) return;
+        const ts = Math.round(event.timestamp / 1000);
+        segmentsRef.current.push({ type: "filler", text: event.label, timestamp: ts });
+        fillerCountRef.current[event.label] = (fillerCountRef.current[event.label] || 0) + 1;
+        totalFillersRef.current += 1;
+
+        setFillerAlert(event.label);
+        setTimeout(() => setFillerAlert(null), 1500);
+
+        // Show in live transcript
+        setLiveTranscript(prev => prev + ` [🔴 "${event.label}"] `);
+
+        finishDrill(false, `Detected filler sound "${event.label}"`);
+      },
+      onSilence: (event: FillerEvent) => {
+        if (stoppedRef.current) return;
+        const ts = Math.round(event.timestamp / 1000);
+        segmentsRef.current.push({ type: "pause", text: "[pause]", timestamp: ts });
+        pauseCountRef.current += 1;
+
+        finishDrill(false, "3-second silence detected — keep speaking!");
+      },
+    });
+    fillerDetectorRef.current = detector;
+    detector.start();
+
+    // === Speech Recognition for transcript ===
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
       toast({ title: "Speech Recognition not supported", description: "Please use Chrome or Edge.", variant: "destructive" });
@@ -242,49 +228,15 @@ export default function TrainerMode() {
     recognitionRef.current = recognition;
     isListeningRef.current = true;
 
-    const resetSilenceTimer = () => {
-      if (silenceRef.current) clearTimeout(silenceRef.current);
-      silenceRef.current = setTimeout(() => {
-        if (isListeningRef.current) {
-          addPause();
-          restartDrill("3-second silence detected — keep speaking!");
-        }
-      }, 3000);
-    };
-
-    // Detect pauses > 1.5 seconds (but less than 3s restart threshold)
-    let pauseDetectorInterval: ReturnType<typeof setInterval> | null = null;
-    pauseDetectorInterval = setInterval(() => {
-      if (!isListeningRef.current) {
-        if (pauseDetectorInterval) clearInterval(pauseDetectorInterval);
-        return;
-      }
-      const silenceDuration = Date.now() - lastSpeechTimeRef.current;
-      if (silenceDuration > 1500 && silenceDuration < 3000) {
-        // Mark a pause only once per silence gap
-        const lastSeg = segmentsRef.current[segmentsRef.current.length - 1];
-        if (!lastSeg || lastSeg.type !== "pause") {
-          addPause();
-          // Update live transcript to show pause
-          setLiveTranscript(prev => prev + " [⏸ pause] ");
-        }
-      }
-    }, 500);
-
     recognition.onresult = (event: any) => {
       if (!isListeningRef.current) return;
 
-      lastSpeechTimeRef.current = Date.now();
-      resetSilenceTimer();
-
-      // Build full text from all results
       let finalText = "";
       let interimText = "";
 
       for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i];
         const text = result[0].transcript;
-
         if (result.isFinal) {
           finalText += text + " ";
         } else {
@@ -292,52 +244,16 @@ export default function TrainerMode() {
         }
       }
 
-      // Check interim text for fillers (the API often strips them from final results)
-      if (interimText) {
-        const { found, fillers } = detectFillers(interimText);
-        if (found) {
-          const firstFiller = Object.keys(fillers)[0];
-          // Record all detected fillers
-          for (const [filler, count] of Object.entries(fillers)) {
-            fillerCountRef.current[filler] = (fillerCountRef.current[filler] || 0) + count;
-            totalFillersRef.current += count;
-          }
-          const ts = Math.floor((Date.now() - startTimeRef.current) / 1000);
-          segmentsRef.current.push({ type: "filler", text: firstFiller, timestamp: ts });
-          restartDrill(`Detected filler word "${firstFiller}"`, firstFiller);
-          if (pauseDetectorInterval) clearInterval(pauseDetectorInterval);
-          return;
-        }
-      }
-
-      // If we got new final text, process it
       if (finalText && finalText !== finalizedTextRef.current) {
         const newPart = finalText.slice(finalizedTextRef.current.length).trim();
         if (newPart) {
-          // Also check final text for fillers (some browsers keep them)
-          const { found, fillers } = detectFillers(newPart);
-          if (found) {
-            const firstFiller = Object.keys(fillers)[0];
-            for (const [filler, count] of Object.entries(fillers)) {
-              fillerCountRef.current[filler] = (fillerCountRef.current[filler] || 0) + count;
-              totalFillersRef.current += count;
-            }
-            const ts = Math.floor((Date.now() - startTimeRef.current) / 1000);
-            segmentsRef.current.push({ type: "filler", text: firstFiller, timestamp: ts });
-            restartDrill(`Detected filler word "${firstFiller}"`, firstFiller);
-            if (pauseDetectorInterval) clearInterval(pauseDetectorInterval);
-            return;
-          }
-
           const ts = Math.floor((Date.now() - startTimeRef.current) / 1000);
           segmentsRef.current.push({ type: "speech", text: newPart, timestamp: ts });
         }
         finalizedTextRef.current = finalText;
       }
 
-      // Update live display
-      const displayText = finalText + interimText;
-      setLiveTranscript(displayText);
+      setLiveTranscript(finalText + interimText);
     };
 
     recognition.onerror = (event: any) => {
@@ -345,21 +261,17 @@ export default function TrainerMode() {
         toast({ title: "Microphone access denied", variant: "destructive" });
         cleanup();
         setState("idle");
-        if (pauseDetectorInterval) clearInterval(pauseDetectorInterval);
       }
     };
 
     recognition.onend = () => {
       if (isListeningRef.current) {
         try { recognition.start(); } catch {}
-      } else {
-        if (pauseDetectorInterval) clearInterval(pauseDetectorInterval);
       }
     };
 
     recognition.start();
-    resetSilenceTimer();
-  }, [cleanup, duration, handleSuccess, restartDrill, toast, addPause]);
+  }, [cleanup, duration, finishDrill, toast]);
 
   useEffect(() => {
     return () => cleanup();
@@ -382,6 +294,16 @@ export default function TrainerMode() {
 
   return (
     <div className={`flex flex-col items-center gap-6 pb-8 transition-colors ${flash ? "flash-red" : ""}`}>
+      {/* Filler Alert Overlay */}
+      {fillerAlert && (
+        <div className="fixed inset-0 z-50 pointer-events-none flex items-center justify-center">
+          <div className="rounded-3xl bg-destructive/90 px-10 py-6 text-center animate-in zoom-in-50 fade-in duration-200">
+            <p className="text-3xl font-extrabold text-destructive-foreground">🔴 "{fillerAlert}"</p>
+            <p className="text-sm text-destructive-foreground/80 mt-1">Filler detected!</p>
+          </div>
+        </div>
+      )}
+
       {/* Difficulty Selector */}
       {state !== "completed" && (
         <div className="flex gap-3 flex-wrap justify-center">
@@ -416,9 +338,7 @@ export default function TrainerMode() {
               <Zap className="h-7 w-7 text-primary" />
             </div>
             <p className="text-xs uppercase tracking-widest text-muted-foreground">Your Topic</p>
-            <h2 className="text-2xl font-extrabold text-foreground sm:text-3xl">
-              "{topic}"
-            </h2>
+            <h2 className="text-2xl font-extrabold text-foreground sm:text-3xl">"{topic}"</h2>
           </CardContent>
         </Card>
       )}
@@ -429,14 +349,9 @@ export default function TrainerMode() {
           <div className="relative flex h-32 w-32 items-center justify-center">
             <svg className="absolute h-full w-full -rotate-90" viewBox="0 0 120 120">
               <circle cx="60" cy="60" r="52" fill="none" stroke="hsl(var(--muted))" strokeWidth="8" />
-              <circle
-                cx="60"
-                cy="60"
-                r="52"
-                fill="none"
+              <circle cx="60" cy="60" r="52" fill="none"
                 stroke={timeLeft <= 10 ? "hsl(var(--destructive))" : "hsl(var(--primary))"}
-                strokeWidth="8"
-                strokeLinecap="round"
+                strokeWidth="8" strokeLinecap="round"
                 strokeDasharray={`${progress * 3.267} ${(100 - progress) * 3.267}`}
                 className="transition-all duration-300"
               />
@@ -444,8 +359,7 @@ export default function TrainerMode() {
             <span className="text-3xl font-extrabold text-foreground">{timeLeft}</span>
           </div>
           <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-            <Timer className="h-3.5 w-3.5" />
-            seconds remaining
+            <Timer className="h-3.5 w-3.5" /> seconds remaining
           </div>
         </div>
       )}
@@ -453,14 +367,10 @@ export default function TrainerMode() {
       {/* ===== POST-DRILL SUMMARY ===== */}
       {state === "completed" && drillStats && (
         <div className="w-full max-w-2xl space-y-4">
-          {/* Header */}
           <Card className={`glass-card w-full rounded-3xl ${wasSuccessful ? "glow-success" : "glow-accent"}`}>
             <CardContent className="flex flex-col items-center gap-3 p-8">
               <div className={`flex h-16 w-16 items-center justify-center rounded-full ${wasSuccessful ? "bg-success/15" : "bg-accent/15"}`}>
-                {wasSuccessful
-                  ? <Trophy className="h-8 w-8 text-success" />
-                  : <RotateCcw className="h-8 w-8 text-accent" />
-                }
+                {wasSuccessful ? <Trophy className="h-8 w-8 text-success" /> : <RotateCcw className="h-8 w-8 text-accent" />}
               </div>
               <h3 className="text-xl font-extrabold text-foreground">
                 {wasSuccessful ? "Amazing! 🎉" : "Almost there! 💪"}
@@ -468,8 +378,7 @@ export default function TrainerMode() {
               <p className="text-sm text-muted-foreground text-center">
                 {wasSuccessful
                   ? `You completed ${duration} seconds filler-free!`
-                  : `You were stopped after ${drillStats.durationSeconds}s. Review your stats and try again.`
-                }
+                  : `Stopped after ${drillStats.durationSeconds}s. Review your stats below.`}
               </p>
               {restarts > 0 && (
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -539,8 +448,7 @@ export default function TrainerMode() {
                   ? "Try speaking a bit faster. Aim for 120-160 WPM for natural conversation."
                   : drillStats.wpm > 180
                   ? "You're speaking quite fast. Try slowing down to let your points land."
-                  : "Great pace! You're in the ideal range for clear communication."
-                }
+                  : "Great pace! You're in the ideal range for clear communication."}
               </p>
             </CardContent>
           </Card>
@@ -557,14 +465,7 @@ export default function TrainerMode() {
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                     <XAxis dataKey="word" stroke="hsl(var(--muted-foreground))" fontSize={12} />
                     <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} allowDecimals={false} />
-                    <Tooltip
-                      contentStyle={{
-                        background: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: "12px",
-                        color: "hsl(var(--foreground))",
-                      }}
-                    />
+                    <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "12px", color: "hsl(var(--foreground))" }} />
                     <Bar dataKey="count" fill="hsl(var(--accent))" radius={[8, 8, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
@@ -572,7 +473,7 @@ export default function TrainerMode() {
             </Card>
           )}
 
-          {/* Enriched Transcript with highlights */}
+          {/* Transcript Timeline */}
           {drillStats.segments.length > 0 && (
             <Card className="glass-card rounded-2xl">
               <CardContent className="p-5 space-y-3">
@@ -581,30 +482,19 @@ export default function TrainerMode() {
                   {drillStats.segments.map((seg, i) => {
                     if (seg.type === "pause") {
                       return (
-                        <span
-                          key={i}
-                          className="inline-flex items-center gap-1 rounded-lg bg-warning/15 px-2 py-0.5 text-xs font-bold text-warning"
-                        >
-                          <Pause className="h-3 w-3" />
-                          {seg.timestamp}s
+                        <span key={i} className="inline-flex items-center gap-1 rounded-lg bg-warning/15 px-2 py-0.5 text-xs font-bold text-warning">
+                          <Pause className="h-3 w-3" /> {seg.timestamp}s
                         </span>
                       );
                     }
                     if (seg.type === "filler") {
                       return (
-                        <span
-                          key={i}
-                          className="inline-flex items-center gap-1 rounded-lg bg-destructive/15 px-2 py-0.5 text-xs font-bold text-destructive"
-                        >
-                          "{seg.text}" @ {seg.timestamp}s
+                        <span key={i} className="inline-flex items-center gap-1 rounded-lg bg-destructive/15 px-2 py-0.5 text-xs font-bold text-destructive">
+                          🔴 "{seg.text}" @ {seg.timestamp}s
                         </span>
                       );
                     }
-                    return (
-                      <span key={i} className="text-secondary-foreground">
-                        {seg.text}
-                      </span>
-                    );
+                    return <span key={i} className="text-secondary-foreground">{seg.text}</span>;
                   })}
                 </div>
               </CardContent>
@@ -616,21 +506,13 @@ export default function TrainerMode() {
       {/* Controls */}
       <div className="flex gap-3">
         {state === "idle" || state === "completed" ? (
-          <Button
-            size="lg"
-            onClick={() => { setRestarts(state === "completed" ? restarts : 0); startDrill(); }}
-            className="glow-primary rounded-2xl px-8 text-base font-bold"
-          >
+          <Button size="lg" onClick={() => { setRestarts(state === "completed" ? restarts : 0); startDrill(); }}
+            className="glow-primary rounded-2xl px-8 text-base font-bold">
             <Play className="mr-2 h-5 w-5" />
             {state === "completed" ? "Try Again" : `Start ${duration}-Second Drill`}
           </Button>
         ) : (
-          <Button
-            size="lg"
-            variant="outline"
-            onClick={stopDrill}
-            className="rounded-2xl px-8 text-base font-bold"
-          >
+          <Button size="lg" variant="outline" onClick={stopDrill} className="rounded-2xl px-8 text-base font-bold">
             <Square className="mr-2 h-5 w-5" /> Stop
           </Button>
         )}
