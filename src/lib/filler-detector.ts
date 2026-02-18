@@ -130,19 +130,25 @@ export class FillerDetector {
     const spectralFlatness = arithmeticMean > 0 ? geometricMean / arithmeticMean : 1;
 
     // 3. Compute spectral centroid — center of mass of the spectrum
-    //    More stable and reliable than autocorrelation pitch detection
+    //    Only use low-frequency range (up to ~4kHz) to focus on voice fundamentals
     let weightedSum = 0;
     let totalWeight = 0;
     const sampleRate = this.audioContext!.sampleRate;
-    for (let i = 1; i < bufferLength / 2; i++) {
+    const maxBin = Math.min(Math.floor(4000 / (sampleRate / (2 * bufferLength))), bufferLength / 2);
+    for (let i = 1; i < maxBin; i++) {
       const freq = (i * sampleRate) / (2 * bufferLength);
       weightedSum += freq * dataArray[i];
       totalWeight += dataArray[i];
     }
     const spectralCentroid = totalWeight > 0 ? weightedSum / totalWeight : 0;
 
-    // 4. Check if sound is voiced — moderate volume + centroid in voice range
-    const isCurrentlyVoiced = rms > 0.012 && spectralCentroid > 100 && spectralCentroid < 2000;
+    // 4. Check if sound is voiced — just needs moderate volume
+    const isCurrentlyVoiced = rms > 0.01;
+    
+    // Log every ~500ms to help debug
+    if (isCurrentlyVoiced && Math.random() < 0.05) {
+      console.log(`[FillerDetector] rms: ${rms.toFixed(4)} | centroid: ${spectralCentroid.toFixed(0)}Hz | flatness: ${spectralFlatness.toFixed(3)} | voiced: ${this.isVoiced}`);
+    }
 
     // 5. Silence detection
     if (rms < 0.008) {
