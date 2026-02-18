@@ -1,6 +1,12 @@
 /**
  * FillerDetector uses the Web Audio API to detect filler sounds (um, uh, ah)
  * by analyzing audio characteristics: sustained low-variation pitch + voiced sound.
+ * 
+ * Key: fillers are distinguished from normal speech by being:
+ * - Longer duration (>500ms of sustained monotone)
+ * - Extremely low pitch variation (coefficient of variation < 0.06)
+ * - Lower energy than normal articulated speech
+ * - No consonant transitions (steady state)
  */
 
 export interface FillerEvent {
@@ -30,15 +36,17 @@ export class FillerDetector {
   private voicedStartTime = 0;
   private isVoiced = false;
   private pitchHistory: number[] = [];
+  private energyHistory: number[] = [];
   private silenceStartTime = 0;
   private isSilent = false;
+  private lastFillerTime = 0; // cooldown
 
   private options: Required<FillerDetectorOptions>;
 
   constructor(opts: FillerDetectorOptions) {
     this.options = {
       silenceThresholdMs: opts.silenceThresholdMs ?? 1500,
-      fillerMinDurationMs: opts.fillerMinDurationMs ?? 250,
+      fillerMinDurationMs: opts.fillerMinDurationMs ?? 500, // 500ms minimum
       onFiller: opts.onFiller,
       onSilence: opts.onSilence,
     };
@@ -55,7 +63,7 @@ export class FillerDetector {
     this.audioContext = new AudioContext();
     this.analyser = this.audioContext.createAnalyser();
     this.analyser.fftSize = 2048;
-    this.analyser.smoothingTimeConstant = 0.8;
+    this.analyser.smoothingTimeConstant = 0.85;
 
     this.source = this.audioContext.createMediaStreamSource(this.stream);
     this.source.connect(this.analyser);
@@ -66,6 +74,8 @@ export class FillerDetector {
     this.isSilent = false;
     this.isVoiced = false;
     this.pitchHistory = [];
+    this.energyHistory = [];
+    this.lastFillerTime = 0;
 
     this.tick();
   }
@@ -101,17 +111,32 @@ export class FillerDetector {
       sum += v * v;
     }
     const rms = Math.sqrt(sum / timeData.length);
-    const volume = rms; // 0..~0.5+ range
 
-    // 2. Estimate dominant frequency via autocorrelation
+    // 2. Compute spectral flatness — fillers have more "pure tone" quality
+    //    (energy concentrated in narrow band vs spread across spectrum)
+    let specSum = 0;
+    let specLogSum = 0;
+    let specCount = 0;
+    for (let i = 2; i < bufferLength / 4; i++) { // focus on low frequencies
+      const val = Math.max(dataArray[i], 1);
+      specSum += val;
+      specLogSum += Math.log(val);
+      specCount++;
+    }
+    const arithmeticMean = specSum / specCount;
+    const geometricMean = Math.exp(specLogSum / specCount);
+    const spectralFlatness = arithmeticMean > 0 ? geometricMean / arithmeticMean : 1;
+    // Lower spectral flatness = more tonal (filler-like)
+    // Higher = more noisy/consonant-rich (normal speech)
+
+    // 3. Estimate dominant frequency
     const dominantFreq = this.estimateFrequency(timeData, this.audioContext!.sampleRate);
 
-    // 3. Check if sound is "voiced" (has clear pitch, moderate volume)
-    // Fillers like "um/uh/ah" are voiced sounds typically 80-300 Hz
-    const isCurrentlyVoiced = volume > 0.02 && dominantFreq > 60 && dominantFreq < 400;
+    // 4. Check if sound is voiced — must be moderate volume, in voice range
+    const isCurrentlyVoiced = rms > 0.015 && dominantFreq > 70 && dominantFreq < 350;
 
-    // 4. Silence detection
-    if (volume < 0.01) {
+    // 5. Silence detection
+    if (rms < 0.008) {
       if (!this.isSilent) {
         this.isSilent = true;
         this.silenceStartTime = now;
@@ -124,7 +149,6 @@ export class FillerDetector {
             duration: silenceDuration,
             label: "pause",
           });
-          // Reset so we don't fire repeatedly
           this.silenceStartTime = now;
         }
       }
@@ -133,28 +157,47 @@ export class FillerDetector {
       this.silenceStartTime = now;
     }
 
-    // 5. Filler detection: sustained voiced sound with low pitch variation
+    // 6. Filler detection with strict criteria
     if (isCurrentlyVoiced) {
       if (!this.isVoiced) {
         this.isVoiced = true;
         this.voicedStartTime = now;
         this.pitchHistory = [dominantFreq];
+        this.energyHistory = [rms];
       } else {
         this.pitchHistory.push(dominantFreq);
+        this.energyHistory.push(rms);
 
         const voicedDuration = now - this.voicedStartTime;
 
-        if (voicedDuration >= this.options.fillerMinDurationMs && this.pitchHistory.length >= 5) {
-          // Check pitch stability: fillers have very stable pitch
+        // Need at least 500ms of data and 10+ samples
+        if (voicedDuration >= this.options.fillerMinDurationMs && this.pitchHistory.length >= 10) {
           const avgPitch = this.pitchHistory.reduce((a, b) => a + b, 0) / this.pitchHistory.length;
           const variance = this.pitchHistory.reduce((a, b) => a + Math.pow(b - avgPitch, 2), 0) / this.pitchHistory.length;
           const stdDev = Math.sqrt(variance);
           const coeffOfVariation = stdDev / avgPitch;
 
-          // Low pitch variation = likely a filler (monotone sustained vowel)
-          // Normal speech has much more pitch variation
-          if (coeffOfVariation < 0.15 && voicedDuration >= this.options.fillerMinDurationMs) {
-            const label = avgPitch < 150 ? "uh" : avgPitch < 250 ? "um" : "ah";
+          // Energy stability — fillers have very stable energy too
+          const avgEnergy = this.energyHistory.reduce((a, b) => a + b, 0) / this.energyHistory.length;
+          const energyVariance = this.energyHistory.reduce((a, b) => a + Math.pow(b - avgEnergy, 2), 0) / this.energyHistory.length;
+          const energyStdDev = Math.sqrt(energyVariance);
+          const energyCV = avgEnergy > 0 ? energyStdDev / avgEnergy : 1;
+
+          // Strict criteria for filler detection:
+          // 1. Very low pitch variation (< 0.05 CV) — fillers are extremely monotone
+          // 2. Low energy variation (< 0.3 CV) — fillers have steady volume
+          // 3. Tonal quality (spectralFlatness < 0.4) — fillers are vowel-like
+          // 4. Moderate-low volume — fillers tend to be quieter than articulated speech
+          // 5. Cooldown: at least 2 seconds between detections
+          const isFiller =
+            coeffOfVariation < 0.05 &&
+            energyCV < 0.3 &&
+            spectralFlatness < 0.4 &&
+            avgEnergy < 0.15 &&
+            (now - this.lastFillerTime) > 2000;
+
+          if (isFiller) {
+            const label = avgPitch < 140 ? "uh" : avgPitch < 220 ? "um" : "ah";
 
             this.options.onFiller({
               type: "filler",
@@ -163,41 +206,45 @@ export class FillerDetector {
               label,
             });
 
-            // Reset to avoid repeated triggers for same filler
+            this.lastFillerTime = now;
             this.isVoiced = false;
             this.pitchHistory = [];
+            this.energyHistory = [];
           }
+        }
+
+        // If voiced segment is too long (>1.5s), it's definitely speech, not a filler — reset
+        if (voicedDuration > 1500) {
+          this.isVoiced = false;
+          this.pitchHistory = [];
+          this.energyHistory = [];
         }
       }
     } else {
-      // If we had a voiced segment that ended, reset
       if (this.isVoiced) {
         this.isVoiced = false;
         this.pitchHistory = [];
+        this.energyHistory = [];
       }
     }
 
     this.rafId = requestAnimationFrame(this.tick);
   };
 
-  /**
-   * Simple autocorrelation-based pitch estimation
-   */
   private estimateFrequency(timeData: Uint8Array, sampleRate: number): number {
     const buf = new Float32Array(timeData.length);
     for (let i = 0; i < timeData.length; i++) {
       buf[i] = (timeData[i] - 128) / 128;
     }
 
-    // Check if there's enough signal
     let rms = 0;
     for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i];
     rms = Math.sqrt(rms / buf.length);
     if (rms < 0.01) return 0;
 
     // Autocorrelation
-    const minLag = Math.floor(sampleRate / 500); // 500 Hz max
-    const maxLag = Math.floor(sampleRate / 50);  // 50 Hz min
+    const minLag = Math.floor(sampleRate / 500);
+    const maxLag = Math.floor(sampleRate / 50);
     let bestCorrelation = 0;
     let bestLag = minLag;
 

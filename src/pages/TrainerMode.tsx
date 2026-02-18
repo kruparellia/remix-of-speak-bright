@@ -183,7 +183,7 @@ export default function TrainerMode() {
 
     // === Audio-based filler detector ===
     const detector = new FillerDetector({
-      fillerMinDurationMs: 300,
+      fillerMinDurationMs: 500,
       silenceThresholdMs: 3000,
       onFiller: (event: FillerEvent) => {
         if (stoppedRef.current) return;
@@ -192,13 +192,14 @@ export default function TrainerMode() {
         fillerCountRef.current[event.label] = (fillerCountRef.current[event.label] || 0) + 1;
         totalFillersRef.current += 1;
 
+        // Brief visual alert — does NOT stop the drill
         setFillerAlert(event.label);
-        setTimeout(() => setFillerAlert(null), 1500);
+        setTimeout(() => setFillerAlert(null), 1200);
 
-        // Show in live transcript
+        // Show in live transcript inline
         setLiveTranscript(prev => prev + ` [🔴 "${event.label}"] `);
 
-        finishDrill(false, `Detected filler sound "${event.label}"`);
+        toast({ title: `Filler detected: "${event.label}"`, description: "Try to avoid it next time!", variant: "destructive" });
       },
       onSilence: (event: FillerEvent) => {
         if (stoppedRef.current) return;
@@ -206,7 +207,10 @@ export default function TrainerMode() {
         segmentsRef.current.push({ type: "pause", text: "[pause]", timestamp: ts });
         pauseCountRef.current += 1;
 
-        finishDrill(false, "3-second silence detected — keep speaking!");
+        // Show pause in live transcript — does NOT stop the drill
+        setLiveTranscript(prev => prev + " [⏸ pause] ");
+
+        toast({ title: "Long pause detected", description: "Keep the momentum going!" });
       },
     });
     fillerDetectorRef.current = detector;
@@ -290,7 +294,7 @@ export default function TrainerMode() {
     ? Object.entries(drillStats.fillerWordsUsed).map(([word, count]) => ({ word, count }))
     : [];
 
-  const wasSuccessful = drillStats && drillStats.totalFillers === 0 && drillStats.pauseCount === 0 && drillStats.durationSeconds >= duration;
+  const wasSuccessful = drillStats && drillStats.durationSeconds >= duration;
 
   return (
     <div className={`flex flex-col items-center gap-6 pb-8 transition-colors ${flash ? "flash-red" : ""}`}>
