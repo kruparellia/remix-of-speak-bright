@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, Trophy, Zap, Timer, Star, Gauge, MessageSquare, BarChart3, RotateCcw } from "lucide-react";
+import { Play, Square, Trophy, Zap, Timer, Star, Gauge, MessageSquare, BarChart3, RotateCcw, Pause } from "lucide-react";
 import confetti from "canvas-confetti";
 import {
   BarChart,
@@ -39,7 +39,19 @@ const TOPICS = [
   "How traveling changes your perspective",
 ];
 
-const FILLER_WORDS = ["um", "uh", "like", "you know", "basically", "literally", "actually"];
+// Filler patterns to detect in interim results (before the API cleans them)
+const FILLER_PATTERNS = [
+  { pattern: /\b(um+|umm+)\b/gi, label: "um" },
+  { pattern: /\b(uh+|uhh+)\b/gi, label: "uh" },
+  { pattern: /\b(ah+|ahh+)\b/gi, label: "ah" },
+  { pattern: /\b(er+|err+)\b/gi, label: "er" },
+  { pattern: /\b(hmm+)\b/gi, label: "hmm" },
+  { pattern: /\blike\b/gi, label: "like" },
+  { pattern: /\byou know\b/gi, label: "you know" },
+  { pattern: /\bbasically\b/gi, label: "basically" },
+  { pattern: /\bliterally\b/gi, label: "literally" },
+  { pattern: /\bactually\b/gi, label: "actually" },
+];
 
 type Difficulty = "beginner" | "intermediate" | "expert";
 
@@ -49,37 +61,36 @@ const DIFFICULTY_CONFIG: Record<Difficulty, { label: string; seconds: number; ic
   expert: { label: "Expert", seconds: 120, icon: "⚡", color: "bg-destructive/15 text-destructive border-destructive/30" },
 };
 
+interface TranscriptSegment {
+  type: "speech" | "filler" | "pause";
+  text: string;
+  timestamp: number; // seconds from start
+}
+
 interface DrillStats {
   wordCount: number;
   durationSeconds: number;
   wpm: number;
   fillerWordsUsed: Record<string, number>;
   totalFillers: number;
+  pauseCount: number;
   clarityScore: number;
-  transcript: string;
+  segments: TranscriptSegment[];
+  rawTranscript: string;
 }
 
-function computeStats(transcript: string, elapsedSeconds: number): DrillStats {
-  const words = transcript.trim().split(/\s+/).filter(Boolean);
-  const wordCount = words.length;
-  const wpm = elapsedSeconds > 0 ? Math.round((wordCount / elapsedSeconds) * 60) : 0;
-
-  const lower = transcript.toLowerCase();
-  const fillerWordsUsed: Record<string, number> = {};
-  let totalFillers = 0;
-  for (const filler of FILLER_WORDS) {
-    const regex = new RegExp(`\\b${filler.replace(/ /g, "\\s+")}\\b`, "gi");
-    const matches = lower.match(regex);
+function detectFillers(text: string): { found: boolean; fillers: Record<string, number> } {
+  const fillers: Record<string, number> = {};
+  let found = false;
+  for (const { pattern, label } of FILLER_PATTERNS) {
+    pattern.lastIndex = 0;
+    const matches = text.match(pattern);
     if (matches && matches.length > 0) {
-      fillerWordsUsed[filler] = matches.length;
-      totalFillers += matches.length;
+      fillers[label] = (fillers[label] || 0) + matches.length;
+      found = true;
     }
   }
-
-  const fillerRatio = wordCount > 0 ? totalFillers / wordCount : 0;
-  const clarityScore = Math.max(0, Math.min(100, Math.round(100 - fillerRatio * 500)));
-
-  return { wordCount, durationSeconds: elapsedSeconds, wpm, fillerWordsUsed, totalFillers, clarityScore, transcript };
+  return { found, fillers };
 }
 
 export default function TrainerMode() {
@@ -87,7 +98,7 @@ export default function TrainerMode() {
   const [state, setState] = useState<"idle" | "running" | "completed">("idle");
   const [timeLeft, setTimeLeft] = useState(DIFFICULTY_CONFIG.beginner.seconds);
   const [topic, setTopic] = useState(() => TOPICS[Math.floor(Math.random() * TOPICS.length)]);
-  const [transcript, setTranscript] = useState("");
+  const [liveTranscript, setLiveTranscript] = useState("");
   const [flash, setFlash] = useState(false);
   const [restarts, setRestarts] = useState(0);
   const [drillStats, setDrillStats] = useState<DrillStats | null>(null);
@@ -97,9 +108,17 @@ export default function TrainerMode() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const silenceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startTimeRef = useRef<number>(0);
-  const transcriptRef = useRef("");
-  const { toast } = useToast();
+  const lastSpeechTimeRef = useRef<number>(0);
 
+  // Accumulated data refs
+  const segmentsRef = useRef<TranscriptSegment[]>([]);
+  const fillerCountRef = useRef<Record<string, number>>({});
+  const totalFillersRef = useRef(0);
+  const pauseCountRef = useRef(0);
+  const finalizedTextRef = useRef("");
+  const lastInterimRef = useRef("");
+
+  const { toast } = useToast();
   const duration = DIFFICULTY_CONFIG[difficulty].seconds;
 
   const pickNewTopic = () => {
@@ -116,45 +135,88 @@ export default function TrainerMode() {
     if (silenceRef.current) { clearTimeout(silenceRef.current); silenceRef.current = null; }
   }, []);
 
+  const buildStats = useCallback((): DrillStats => {
+    const elapsed = Math.max(1, Math.floor((Date.now() - startTimeRef.current) / 1000));
+    const raw = finalizedTextRef.current.trim();
+    const words = raw.split(/\s+/).filter(Boolean);
+    const wordCount = words.length;
+    const wpm = elapsed > 0 ? Math.round((wordCount / elapsed) * 60) : 0;
+    const totalFillers = totalFillersRef.current;
+    const fillerRatio = wordCount > 0 ? totalFillers / wordCount : 0;
+    const pausePenalty = pauseCountRef.current * 3;
+    const clarityScore = Math.max(0, Math.min(100, Math.round(100 - fillerRatio * 400 - pausePenalty)));
+
+    return {
+      wordCount,
+      durationSeconds: elapsed,
+      wpm,
+      fillerWordsUsed: { ...fillerCountRef.current },
+      totalFillers,
+      pauseCount: pauseCountRef.current,
+      clarityScore,
+      segments: [...segmentsRef.current],
+      rawTranscript: raw,
+    };
+  }, []);
+
   const handleSuccess = useCallback(() => {
-    const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
     cleanup();
-    const stats = computeStats(transcriptRef.current, elapsed);
+    const stats = buildStats();
     setDrillStats(stats);
     setState("completed");
     confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 }, colors: ["#58cc02", "#1cb0f6", "#ff9600"] });
-  }, [cleanup]);
+  }, [cleanup, buildStats]);
 
-  const restartDrill = useCallback((reason: string) => {
-    const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+  const restartDrill = useCallback((reason: string, fillerWord?: string) => {
     cleanup();
     setFlash(true);
     setTimeout(() => setFlash(false), 500);
     setRestarts((r) => r + 1);
 
-    // Compute stats for the failed attempt
-    const stats = computeStats(transcriptRef.current, elapsed);
+    if (fillerWord) {
+      // Add filler to segments
+      const ts = Math.floor((Date.now() - startTimeRef.current) / 1000);
+      segmentsRef.current.push({ type: "filler", text: fillerWord, timestamp: ts });
+      fillerCountRef.current[fillerWord] = (fillerCountRef.current[fillerWord] || 0) + 1;
+      totalFillersRef.current += 1;
+    }
+
+    const stats = buildStats();
     setDrillStats(stats);
 
-    toast({ title: "Restarting drill", description: reason, variant: "destructive" });
+    toast({ title: "Drill stopped", description: reason, variant: "destructive" });
 
     pickNewTopic();
     setTimeLeft(duration);
-    setTranscript("");
-    transcriptRef.current = "";
-    setState("completed"); // Show stats instead of going straight to idle
-  }, [cleanup, toast, duration]);
+    setLiveTranscript("");
+    setState("completed");
+  }, [cleanup, toast, duration, buildStats]);
+
+  const addPause = useCallback(() => {
+    const ts = Math.floor((Date.now() - startTimeRef.current) / 1000);
+    segmentsRef.current.push({ type: "pause", text: "[pause]", timestamp: ts });
+    pauseCountRef.current += 1;
+  }, []);
 
   const startDrill = useCallback(() => {
     cleanup();
     setState("running");
-    setTranscript("");
-    transcriptRef.current = "";
+    setLiveTranscript("");
     setDrillStats(null);
     setTimeLeft(duration);
     pickNewTopic();
 
+    // Reset accumulated data
+    segmentsRef.current = [];
+    fillerCountRef.current = {};
+    totalFillersRef.current = 0;
+    pauseCountRef.current = 0;
+    finalizedTextRef.current = "";
+    lastInterimRef.current = "";
+
     startTimeRef.current = Date.now();
+    lastSpeechTimeRef.current = Date.now();
+
     timerRef.current = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
       const remaining = duration - elapsed;
@@ -184,28 +246,98 @@ export default function TrainerMode() {
       if (silenceRef.current) clearTimeout(silenceRef.current);
       silenceRef.current = setTimeout(() => {
         if (isListeningRef.current) {
+          addPause();
           restartDrill("3-second silence detected — keep speaking!");
         }
       }, 3000);
     };
 
+    // Detect pauses > 1.5 seconds (but less than 3s restart threshold)
+    let pauseDetectorInterval: ReturnType<typeof setInterval> | null = null;
+    pauseDetectorInterval = setInterval(() => {
+      if (!isListeningRef.current) {
+        if (pauseDetectorInterval) clearInterval(pauseDetectorInterval);
+        return;
+      }
+      const silenceDuration = Date.now() - lastSpeechTimeRef.current;
+      if (silenceDuration > 1500 && silenceDuration < 3000) {
+        // Mark a pause only once per silence gap
+        const lastSeg = segmentsRef.current[segmentsRef.current.length - 1];
+        if (!lastSeg || lastSeg.type !== "pause") {
+          addPause();
+          // Update live transcript to show pause
+          setLiveTranscript(prev => prev + " [⏸ pause] ");
+        }
+      }
+    }, 500);
+
     recognition.onresult = (event: any) => {
       if (!isListeningRef.current) return;
-      resetSilenceTimer();
-      let full = "";
-      for (let i = 0; i < event.results.length; i++) {
-        full += event.results[i][0].transcript;
-      }
-      setTranscript(full);
-      transcriptRef.current = full;
 
-      const lower = full.toLowerCase();
-      for (const filler of FILLER_WORDS) {
-        if (lower.includes(filler)) {
-          restartDrill(`Detected filler word "${filler}"`);
+      lastSpeechTimeRef.current = Date.now();
+      resetSilenceTimer();
+
+      // Build full text from all results
+      let finalText = "";
+      let interimText = "";
+
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i];
+        const text = result[0].transcript;
+
+        if (result.isFinal) {
+          finalText += text + " ";
+        } else {
+          interimText += text;
+        }
+      }
+
+      // Check interim text for fillers (the API often strips them from final results)
+      if (interimText) {
+        const { found, fillers } = detectFillers(interimText);
+        if (found) {
+          const firstFiller = Object.keys(fillers)[0];
+          // Record all detected fillers
+          for (const [filler, count] of Object.entries(fillers)) {
+            fillerCountRef.current[filler] = (fillerCountRef.current[filler] || 0) + count;
+            totalFillersRef.current += count;
+          }
+          const ts = Math.floor((Date.now() - startTimeRef.current) / 1000);
+          segmentsRef.current.push({ type: "filler", text: firstFiller, timestamp: ts });
+          restartDrill(`Detected filler word "${firstFiller}"`, firstFiller);
+          if (pauseDetectorInterval) clearInterval(pauseDetectorInterval);
           return;
         }
       }
+
+      // If we got new final text, process it
+      if (finalText && finalText !== finalizedTextRef.current) {
+        const newPart = finalText.slice(finalizedTextRef.current.length).trim();
+        if (newPart) {
+          // Also check final text for fillers (some browsers keep them)
+          const { found, fillers } = detectFillers(newPart);
+          if (found) {
+            const firstFiller = Object.keys(fillers)[0];
+            for (const [filler, count] of Object.entries(fillers)) {
+              fillerCountRef.current[filler] = (fillerCountRef.current[filler] || 0) + count;
+              totalFillersRef.current += count;
+            }
+            const ts = Math.floor((Date.now() - startTimeRef.current) / 1000);
+            segmentsRef.current.push({ type: "filler", text: firstFiller, timestamp: ts });
+            restartDrill(`Detected filler word "${firstFiller}"`, firstFiller);
+            if (pauseDetectorInterval) clearInterval(pauseDetectorInterval);
+            return;
+          }
+
+          const ts = Math.floor((Date.now() - startTimeRef.current) / 1000);
+          segmentsRef.current.push({ type: "speech", text: newPart, timestamp: ts });
+        }
+        finalizedTextRef.current = finalText;
+      }
+
+      // Update live display
+      const displayText = finalText + interimText;
+      setLiveTranscript(displayText);
     };
 
     recognition.onerror = (event: any) => {
@@ -213,18 +345,21 @@ export default function TrainerMode() {
         toast({ title: "Microphone access denied", variant: "destructive" });
         cleanup();
         setState("idle");
+        if (pauseDetectorInterval) clearInterval(pauseDetectorInterval);
       }
     };
 
     recognition.onend = () => {
       if (isListeningRef.current) {
         try { recognition.start(); } catch {}
+      } else {
+        if (pauseDetectorInterval) clearInterval(pauseDetectorInterval);
       }
     };
 
     recognition.start();
     resetSilenceTimer();
-  }, [cleanup, duration, handleSuccess, restartDrill, toast]);
+  }, [cleanup, duration, handleSuccess, restartDrill, toast, addPause]);
 
   useEffect(() => {
     return () => cleanup();
@@ -234,8 +369,7 @@ export default function TrainerMode() {
     cleanup();
     setState("idle");
     setTimeLeft(duration);
-    setTranscript("");
-    transcriptRef.current = "";
+    setLiveTranscript("");
   };
 
   const progress = ((duration - timeLeft) / duration) * 100;
@@ -244,7 +378,7 @@ export default function TrainerMode() {
     ? Object.entries(drillStats.fillerWordsUsed).map(([word, count]) => ({ word, count }))
     : [];
 
-  const wasSuccessful = drillStats && drillStats.totalFillers === 0 && drillStats.durationSeconds >= duration;
+  const wasSuccessful = drillStats && drillStats.totalFillers === 0 && drillStats.pauseCount === 0 && drillStats.durationSeconds >= duration;
 
   return (
     <div className={`flex flex-col items-center gap-6 pb-8 transition-colors ${flash ? "flash-red" : ""}`}>
@@ -274,7 +408,7 @@ export default function TrainerMode() {
         </div>
       )}
 
-      {/* Topic Card — show in idle and running */}
+      {/* Topic Card */}
       {state !== "completed" && (
         <Card className="glass-card glow-primary w-full max-w-2xl rounded-3xl">
           <CardContent className="flex flex-col items-center gap-4 p-8 text-center">
@@ -347,7 +481,7 @@ export default function TrainerMode() {
           </Card>
 
           {/* Stats Cards */}
-          <div className="grid gap-3 grid-cols-2 sm:grid-cols-4">
+          <div className="grid gap-3 grid-cols-2 sm:grid-cols-5">
             <Card className="glass-card rounded-2xl">
               <CardContent className="flex flex-col items-center gap-1 p-4">
                 <Gauge className="h-5 w-5 text-primary" />
@@ -367,6 +501,13 @@ export default function TrainerMode() {
                 <BarChart3 className="h-5 w-5 text-warning" />
                 <span className="text-2xl font-extrabold text-foreground">{drillStats.totalFillers}</span>
                 <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Fillers</span>
+              </CardContent>
+            </Card>
+            <Card className="glass-card rounded-2xl">
+              <CardContent className="flex flex-col items-center gap-1 p-4">
+                <Pause className="h-5 w-5 text-destructive" />
+                <span className="text-2xl font-extrabold text-foreground">{drillStats.pauseCount}</span>
+                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Pauses</span>
               </CardContent>
             </Card>
             <Card className="glass-card rounded-2xl">
@@ -431,12 +572,41 @@ export default function TrainerMode() {
             </Card>
           )}
 
-          {/* Transcript */}
-          {drillStats.transcript && (
+          {/* Enriched Transcript with highlights */}
+          {drillStats.segments.length > 0 && (
             <Card className="glass-card rounded-2xl">
-              <CardContent className="p-5 space-y-2">
-                <span className="text-sm font-bold text-foreground">Your Transcript</span>
-                <p className="text-sm text-secondary-foreground leading-relaxed">{drillStats.transcript}</p>
+              <CardContent className="p-5 space-y-3">
+                <span className="text-sm font-bold text-foreground">Transcript Timeline</span>
+                <div className="text-sm leading-relaxed flex flex-wrap items-center gap-1">
+                  {drillStats.segments.map((seg, i) => {
+                    if (seg.type === "pause") {
+                      return (
+                        <span
+                          key={i}
+                          className="inline-flex items-center gap-1 rounded-lg bg-warning/15 px-2 py-0.5 text-xs font-bold text-warning"
+                        >
+                          <Pause className="h-3 w-3" />
+                          {seg.timestamp}s
+                        </span>
+                      );
+                    }
+                    if (seg.type === "filler") {
+                      return (
+                        <span
+                          key={i}
+                          className="inline-flex items-center gap-1 rounded-lg bg-destructive/15 px-2 py-0.5 text-xs font-bold text-destructive"
+                        >
+                          "{seg.text}" @ {seg.timestamp}s
+                        </span>
+                      );
+                    }
+                    return (
+                      <span key={i} className="text-secondary-foreground">
+                        {seg.text}
+                      </span>
+                    );
+                  })}
+                </div>
               </CardContent>
             </Card>
           )}
@@ -467,11 +637,11 @@ export default function TrainerMode() {
       </div>
 
       {/* Live Transcript */}
-      {state === "running" && transcript && (
+      {state === "running" && liveTranscript && (
         <Card className="glass-card w-full max-w-2xl rounded-2xl">
           <CardContent className="p-4">
             <p className="text-xs uppercase tracking-widest text-muted-foreground mb-2">Live Transcript</p>
-            <p className="text-sm text-secondary-foreground leading-relaxed">{transcript}</p>
+            <p className="text-sm text-secondary-foreground leading-relaxed">{liveTranscript}</p>
           </CardContent>
         </Card>
       )}
