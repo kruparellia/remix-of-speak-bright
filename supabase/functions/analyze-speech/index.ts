@@ -26,17 +26,42 @@ serve(async (req) => {
       throw new Error("LOVABLE_API_KEY is not configured");
     }
 
-    const systemPrompt = `You are a speech coach analyzing a practice speech transcript. The speaker was given a topic and asked to speak about it for a timed drill.
+    const systemPrompt = `You are an expert speech coach and communication analyst. You are analyzing a practice speech transcript where the speaker was given a specific topic and asked to speak about it in a timed drill.
+
+Your job is to provide DETAILED, SPECIFIC, and ACTIONABLE feedback. Do NOT give generic praise. Reference exact phrases or ideas from the transcript.
 
 Analyze the transcript and return a JSON object with these fields:
-- relevance (number 0-100): How relevant the speech content is to the given topic
-- coherence (number 0-100): How logically structured and coherent the speech is
-- quality (number 0-100): Overall quality of the speech content
-- summary (string, 1-2 sentences): Brief overall assessment
-- strengths (array of strings, 1-3 items): What the speaker did well
-- improvements (array of strings, 1-3 items): Specific actionable suggestions to improve
 
-Be encouraging but honest. If the transcript is very short or mostly gibberish, score accordingly but be kind.`;
+- relevance (number 0-100): How relevant is the speech to the given topic? 
+  - 90-100: Every sentence directly addresses the topic with depth
+  - 70-89: Mostly on-topic with minor tangents
+  - 40-69: Partially relevant but wanders significantly
+  - 0-39: Mostly off-topic, rambling, or nonsensical
+
+- coherence (number 0-100): How logically structured and easy to follow is the speech?
+  - Consider: logical flow between ideas, clear transitions, structured arguments, beginning/middle/end
+  - Penalize: jumping between unrelated points, contradictions, incomplete thoughts
+
+- quality (number 0-100): Overall quality considering vocabulary, depth of thought, persuasiveness, and engagement
+  - Consider: specific examples, interesting perspectives, confident assertions, varied sentence structure
+
+- vocabulary_score (number 0-100): Richness and appropriateness of word choice
+
+- structure_score (number 0-100): How well-organized the speech is (intro, body, conclusion pattern)
+
+- confidence_score (number 0-100): How confident and assertive the speaker sounds based on language patterns
+
+- summary (string, 3-4 sentences): Detailed overall assessment referencing specific content from the transcript. Mention what the speaker actually said and whether it made sense.
+
+- strengths (array of strings, 2-4 items): Specific things done well, citing actual phrases or ideas from the transcript
+
+- improvements (array of strings, 2-4 items): Concrete, actionable suggestions. Instead of "be more specific", say exactly what they could add or change. Reference their actual words.
+
+- example_revision (string): Take one weak sentence from the transcript and show how it could be rephrased more effectively. Format as "Original: '...' → Better: '...'"
+
+- topic_coverage (string, 1-2 sentences): What aspects of the topic were covered and what important angles were missed?
+
+Be encouraging but HONEST. If the transcript is nonsense, off-topic, or very low quality, say so clearly with low scores. Do not inflate scores to be nice.`;
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -45,7 +70,7 @@ Be encouraging but honest. If the transcript is very short or mostly gibberish, 
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: "google/gemini-2.5-flash",
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -65,19 +90,24 @@ Be encouraging but honest. If the transcript is very short or mostly gibberish, 
                   relevance: { type: "number", description: "Relevance score 0-100" },
                   coherence: { type: "number", description: "Coherence score 0-100" },
                   quality: { type: "number", description: "Overall quality score 0-100" },
-                  summary: { type: "string", description: "1-2 sentence assessment" },
+                  vocabulary_score: { type: "number", description: "Vocabulary richness 0-100" },
+                  structure_score: { type: "number", description: "Speech structure 0-100" },
+                  confidence_score: { type: "number", description: "Confidence level 0-100" },
+                  summary: { type: "string", description: "3-4 sentence detailed assessment" },
                   strengths: {
                     type: "array",
                     items: { type: "string" },
-                    description: "1-3 strengths",
+                    description: "2-4 specific strengths with transcript references",
                   },
                   improvements: {
                     type: "array",
                     items: { type: "string" },
-                    description: "1-3 improvement suggestions",
+                    description: "2-4 concrete improvement suggestions",
                   },
+                  example_revision: { type: "string", description: "One sentence revised for improvement" },
+                  topic_coverage: { type: "string", description: "What was covered and what was missed" },
                 },
-                required: ["relevance", "coherence", "quality", "summary", "strengths", "improvements"],
+                required: ["relevance", "coherence", "quality", "vocabulary_score", "structure_score", "confidence_score", "summary", "strengths", "improvements", "example_revision", "topic_coverage"],
                 additionalProperties: false,
               },
             },
