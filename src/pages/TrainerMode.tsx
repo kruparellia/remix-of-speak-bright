@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, Trophy, Zap, Timer, Star, Gauge, MessageSquare, BarChart3, RotateCcw, Pause, Brain, Loader2 } from "lucide-react";
+import { Play, Square, Trophy, Zap, Timer, Star, Gauge, MessageSquare, BarChart3, RotateCcw, Pause, Brain, Loader2, BookOpen, Sparkles, PenLine } from "lucide-react";
 import confetti from "canvas-confetti";
 import { FillerDetector, type FillerEvent } from "@/lib/filler-detector";
 import { supabase } from "@/integrations/supabase/client";
@@ -70,9 +70,14 @@ interface SpeechAnalysis {
   relevance: number;
   coherence: number;
   quality: number;
+  vocabulary_score?: number;
+  structure_score?: number;
+  confidence_score?: number;
   summary: string;
   strengths: string[];
   improvements: string[];
+  example_revision?: string;
+  topic_coverage?: string;
 }
 
 export default function TrainerMode() {
@@ -87,6 +92,7 @@ export default function TrainerMode() {
   const [fillerAlert, setFillerAlert] = useState<string | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<SpeechAnalysis | null>(null);
   const [analyzingAi, setAnalyzingAi] = useState(false);
+  const [liveFillerCount, setLiveFillerCount] = useState(0);
 
   const recognitionRef = useRef<any>(null);
   const isListeningRef = useRef(false);
@@ -101,11 +107,16 @@ export default function TrainerMode() {
   const pauseCountRef = useRef(0);
   const finalizedTextRef = useRef("");
   const stoppedRef = useRef(false);
+  const drillTopicRef = useRef("");
 
   const { toast } = useToast();
   const duration = DIFFICULTY_CONFIG[difficulty].seconds;
 
-  const pickNewTopic = () => setTopic(TOPICS[Math.floor(Math.random() * TOPICS.length)]);
+  const pickNewTopic = () => {
+    const t = TOPICS[Math.floor(Math.random() * TOPICS.length)];
+    setTopic(t);
+    drillTopicRef.current = t;
+  };
 
   const cleanup = useCallback(() => {
     isListeningRef.current = false;
@@ -144,22 +155,56 @@ export default function TrainerMode() {
     };
   }, []);
 
-  const analyzeWithAi = useCallback(async (transcript: string, drillTopic: string) => {
-    if (!transcript || transcript.trim().split(/\s+/).length < 5) return;
+  const saveSession = useCallback(async (stats: DrillStats, analysis: SpeechAnalysis | null, drillTopic: string) => {
+    try {
+      await supabase.from("drill_sessions").insert({
+        topic: drillTopic,
+        difficulty,
+        duration_seconds: stats.durationSeconds,
+        word_count: stats.wordCount,
+        wpm: stats.wpm,
+        total_fillers: stats.totalFillers,
+        filler_words: stats.fillerWordsUsed,
+        pause_count: stats.pauseCount,
+        clarity_score: stats.clarityScore,
+        completed: stats.durationSeconds >= duration,
+        ai_relevance: analysis?.relevance ?? null,
+        ai_coherence: analysis?.coherence ?? null,
+        ai_quality: analysis?.quality ?? null,
+        ai_summary: analysis?.summary ?? null,
+        ai_strengths: analysis?.strengths ?? null,
+        ai_improvements: analysis?.improvements ?? null,
+      } as any);
+    } catch (e) {
+      console.error("Failed to save session:", e);
+    }
+  }, [difficulty, duration]);
+
+  const analyzeWithAi = useCallback(async (transcript: string, drillTopic: string, stats: DrillStats) => {
+    if (!transcript || transcript.trim().split(/\s+/).length < 5) {
+      // Still save session even without AI
+      saveSession(stats, null, drillTopic);
+      return;
+    }
     setAnalyzingAi(true);
     try {
       const { data, error } = await supabase.functions.invoke("analyze-speech", {
         body: { transcript, topic: drillTopic },
       });
       if (error) throw error;
-      setAiAnalysis(data as SpeechAnalysis);
+      const analysis = data as SpeechAnalysis;
+      setAiAnalysis(analysis);
+      // Save session with AI data
+      saveSession(stats, analysis, drillTopic);
     } catch (e) {
       console.error("AI analysis failed:", e);
       toast({ title: "AI analysis unavailable", description: "Could not analyze your speech this time.", variant: "destructive" });
+      // Save session without AI
+      saveSession(stats, null, drillTopic);
     } finally {
       setAnalyzingAi(false);
     }
-  }, [toast]);
+  }, [toast, saveSession]);
 
   const finishDrill = useCallback((success: boolean, reason?: string) => {
     if (stoppedRef.current) return;
@@ -178,12 +223,12 @@ export default function TrainerMode() {
 
     // Trigger AI analysis
     const transcript = finalizedTextRef.current.trim();
-    analyzeWithAi(transcript, topic);
+    analyzeWithAi(transcript, drillTopicRef.current, stats);
 
     if (success) {
       confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 }, colors: ["#1c9bf6", "#7c4dff", "#ff9600"] });
     }
-  }, [cleanup, buildStats, toast, analyzeWithAi, topic]);
+  }, [cleanup, buildStats, toast, analyzeWithAi]);
 
   const startDrill = useCallback(() => {
     cleanup();
@@ -195,6 +240,7 @@ export default function TrainerMode() {
     setAiAnalysis(null);
     setAnalyzingAi(false);
     setTimeLeft(duration);
+    setLiveFillerCount(0);
     pickNewTopic();
 
     segmentsRef.current = [];
@@ -226,12 +272,11 @@ export default function TrainerMode() {
         segmentsRef.current.push({ type: "filler", text: event.label, timestamp: ts });
         fillerCountRef.current[event.label] = (fillerCountRef.current[event.label] || 0) + 1;
         totalFillersRef.current += 1;
+        setLiveFillerCount(totalFillersRef.current);
 
-        // Brief visual alert — does NOT stop the drill
         setFillerAlert(event.label);
         setTimeout(() => setFillerAlert(null), 1200);
 
-        // Show in live transcript inline
         setLiveTranscript(prev => prev + ` [🔴 "${event.label}"] `);
 
         toast({ title: `Filler detected: "${event.label}"`, description: "Try to avoid it next time!", variant: "destructive" });
@@ -242,7 +287,6 @@ export default function TrainerMode() {
         segmentsRef.current.push({ type: "pause", text: "[pause]", timestamp: ts });
         pauseCountRef.current += 1;
 
-        // Show pause in live transcript — does NOT stop the drill
         setLiveTranscript(prev => prev + " [⏸ pause] ");
 
         toast({ title: "Long pause detected", description: "Keep the momentum going!" });
@@ -321,6 +365,7 @@ export default function TrainerMode() {
     setState("idle");
     setTimeLeft(duration);
     setLiveTranscript("");
+    setLiveFillerCount(0);
   };
 
   const progress = ((duration - timeLeft) / duration) * 100;
@@ -382,21 +427,43 @@ export default function TrainerMode() {
         </Card>
       )}
 
-      {/* Timer */}
+      {/* Timer + Live Filler Counter */}
       {state === "running" && (
-        <div className="flex flex-col items-center gap-2">
-          <div className="relative flex h-32 w-32 items-center justify-center">
-            <svg className="absolute h-full w-full -rotate-90" viewBox="0 0 120 120">
-              <circle cx="60" cy="60" r="52" fill="none" stroke="hsl(var(--muted))" strokeWidth="8" />
-              <circle cx="60" cy="60" r="52" fill="none"
-                stroke={timeLeft <= 10 ? "hsl(var(--destructive))" : "hsl(var(--primary))"}
-                strokeWidth="8" strokeLinecap="round"
-                strokeDasharray={`${progress * 3.267} ${(100 - progress) * 3.267}`}
-                className="transition-all duration-300"
-              />
-            </svg>
-            <span className="text-3xl font-extrabold text-foreground">{timeLeft}</span>
+        <div className="flex flex-col items-center gap-4">
+          <div className="flex items-center gap-8">
+            {/* Timer circle */}
+            <div className="relative flex h-32 w-32 items-center justify-center">
+              <svg className="absolute h-full w-full -rotate-90" viewBox="0 0 120 120">
+                <circle cx="60" cy="60" r="52" fill="none" stroke="hsl(var(--muted))" strokeWidth="8" />
+                <circle cx="60" cy="60" r="52" fill="none"
+                  stroke={timeLeft <= 10 ? "hsl(var(--destructive))" : "hsl(var(--primary))"}
+                  strokeWidth="8" strokeLinecap="round"
+                  strokeDasharray={`${progress * 3.267} ${(100 - progress) * 3.267}`}
+                  className="transition-all duration-300"
+                />
+              </svg>
+              <span className="text-3xl font-extrabold text-foreground">{timeLeft}</span>
+            </div>
+
+            {/* Live Filler Counter */}
+            <div className="flex flex-col items-center gap-1">
+              <div className={`flex h-20 w-20 items-center justify-center rounded-2xl border-2 transition-all ${
+                liveFillerCount === 0 
+                  ? "border-success/30 bg-success/10" 
+                  : liveFillerCount <= 3 
+                  ? "border-warning/30 bg-warning/10" 
+                  : "border-destructive/30 bg-destructive/10"
+              }`}>
+                <span className={`text-3xl font-extrabold ${
+                  liveFillerCount === 0 ? "text-success" : liveFillerCount <= 3 ? "text-warning" : "text-destructive"
+                }`}>
+                  {liveFillerCount}
+                </span>
+              </div>
+              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Fillers</span>
+            </div>
           </div>
+
           <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
             <Timer className="h-3.5 w-3.5" /> seconds remaining
           </div>
@@ -551,11 +618,11 @@ export default function TrainerMode() {
                 {analyzingAi ? (
                   <div className="flex items-center gap-3 py-4 justify-center">
                     <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                    <span className="text-sm text-muted-foreground">Analyzing your speech...</span>
+                    <span className="text-sm text-muted-foreground">Analyzing your speech in detail...</span>
                   </div>
                 ) : aiAnalysis ? (
-                  <div className="space-y-4">
-                    {/* Scores */}
+                  <div className="space-y-5">
+                    {/* Primary Scores */}
                     <div className="grid gap-3 grid-cols-3">
                       {[
                         { label: "Relevance", value: aiAnalysis.relevance },
@@ -572,8 +639,40 @@ export default function TrainerMode() {
                       ))}
                     </div>
 
+                    {/* Secondary Scores */}
+                    {(aiAnalysis.vocabulary_score != null || aiAnalysis.structure_score != null || aiAnalysis.confidence_score != null) && (
+                      <div className="grid gap-3 grid-cols-3">
+                        {[
+                          { label: "Vocabulary", value: aiAnalysis.vocabulary_score, icon: BookOpen },
+                          { label: "Structure", value: aiAnalysis.structure_score, icon: BarChart3 },
+                          { label: "Confidence", value: aiAnalysis.confidence_score, icon: Sparkles },
+                        ].filter(s => s.value != null).map((s) => (
+                          <div key={s.label} className="flex items-center gap-2 rounded-xl bg-secondary/50 p-3">
+                            <s.icon className="h-4 w-4 text-primary shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">{s.label}</span>
+                                <span className={`text-sm font-extrabold ${s.value! >= 70 ? "text-success" : s.value! >= 40 ? "text-warning" : "text-destructive"}`}>{s.value}</span>
+                              </div>
+                              <Progress value={s.value!} className="h-1 mt-1" />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {/* Summary */}
                     <p className="text-sm text-foreground bg-secondary/50 rounded-xl p-3">{aiAnalysis.summary}</p>
+
+                    {/* Topic Coverage */}
+                    {aiAnalysis.topic_coverage && (
+                      <div className="rounded-xl bg-primary/5 border border-primary/10 p-3 space-y-1">
+                        <span className="text-xs font-bold text-primary uppercase tracking-widest flex items-center gap-1">
+                          🎯 Topic Coverage
+                        </span>
+                        <p className="text-xs text-secondary-foreground">{aiAnalysis.topic_coverage}</p>
+                      </div>
+                    )}
 
                     {/* Strengths */}
                     {aiAnalysis.strengths.length > 0 && (
@@ -592,6 +691,16 @@ export default function TrainerMode() {
                         {aiAnalysis.improvements.map((s, i) => (
                           <p key={i} className="text-xs text-secondary-foreground pl-4">• {s}</p>
                         ))}
+                      </div>
+                    )}
+
+                    {/* Example Revision */}
+                    {aiAnalysis.example_revision && (
+                      <div className="rounded-xl bg-accent/5 border border-accent/10 p-3 space-y-1">
+                        <span className="text-xs font-bold text-accent uppercase tracking-widest flex items-center gap-1">
+                          <PenLine className="h-3 w-3" /> Example Revision
+                        </span>
+                        <p className="text-xs text-secondary-foreground italic">{aiAnalysis.example_revision}</p>
                       </div>
                     )}
                   </div>

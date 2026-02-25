@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import {
   BarChart3,
   TrendingUp,
@@ -5,6 +6,7 @@ import {
   Lightbulb,
   Zap,
   Clock,
+  Loader2,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -19,48 +21,126 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { supabase } from "@/integrations/supabase/client";
 
-const paceData = [
-  { day: "Mon", wpm: 128 },
-  { day: "Tue", wpm: 135 },
-  { day: "Wed", wpm: 122 },
-  { day: "Thu", wpm: 140 },
-  { day: "Fri", wpm: 138 },
-  { day: "Sat", wpm: 145 },
-  { day: "Sun", wpm: 142 },
-];
-
-const fillerData = [
-  { word: "Um", count: 45 },
-  { word: "Uh", count: 22 },
-  { word: "Like", count: 15 },
-  { word: "You know", count: 12 },
-  { word: "So", count: 8 },
-];
-
-const insights = [
-  {
-    icon: Lightbulb,
-    text: "You tend to say 'um' when starting a new sentence. Try pausing instead.",
-  },
-  {
-    icon: Target,
-    text: "Your speaking pace is improving! Aim for 130-150 WPM for conversational clarity.",
-  },
-  {
-    icon: Zap,
-    text: "Practice the 60-second drill daily to reduce filler words by 30% this week.",
-  },
-];
-
-const stats = [
-  { label: "Sessions", value: "24", icon: Clock, change: "+3 this week" },
-  { label: "Avg WPM", value: "138", icon: TrendingUp, change: "+8 vs last week" },
-  { label: "Clarity Score", value: "85", icon: Target, change: "+5 points" },
-  { label: "Streak", value: "7 days", icon: Zap, change: "Personal best!" },
-];
+interface DrillSession {
+  id: string;
+  created_at: string;
+  topic: string;
+  difficulty: string;
+  duration_seconds: number;
+  word_count: number;
+  wpm: number;
+  total_fillers: number;
+  filler_words: Record<string, number>;
+  pause_count: number;
+  clarity_score: number;
+  completed: boolean;
+  ai_relevance: number | null;
+  ai_coherence: number | null;
+  ai_quality: number | null;
+  ai_summary: string | null;
+}
 
 export default function Dashboard() {
+  const [sessions, setSessions] = useState<DrillSession[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchSessions = async () => {
+      const { data, error } = await supabase
+        .from("drill_sessions")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(100);
+      if (!error && data) {
+        setSessions(data as any as DrillSession[]);
+      }
+      setLoading(false);
+    };
+    fetchSessions();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  const totalSessions = sessions.length;
+  const completedSessions = sessions.filter(s => s.completed).length;
+  const avgWpm = totalSessions > 0 ? Math.round(sessions.reduce((a, s) => a + s.wpm, 0) / totalSessions) : 0;
+  const avgClarity = totalSessions > 0 ? Math.round(sessions.reduce((a, s) => a + s.clarity_score, 0) / totalSessions) : 0;
+  const totalFillers = sessions.reduce((a, s) => a + s.total_fillers, 0);
+
+  // Calculate streak (consecutive days with at least one session)
+  const uniqueDays = new Set(sessions.map(s => new Date(s.created_at).toDateString()));
+  let streak = 0;
+  const today = new Date();
+  for (let i = 0; i < 365; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    if (uniqueDays.has(d.toDateString())) {
+      streak++;
+    } else if (i > 0) break; // allow today to not have a session yet
+  }
+
+  // WPM over recent sessions (last 7)
+  const recentSessions = [...sessions].reverse().slice(-7);
+  const paceData = recentSessions.map((s, i) => ({
+    session: `#${i + 1}`,
+    wpm: s.wpm,
+  }));
+
+  // Aggregate filler words across all sessions
+  const fillerAgg: Record<string, number> = {};
+  sessions.forEach(s => {
+    const fw = s.filler_words as Record<string, number>;
+    if (fw && typeof fw === "object") {
+      Object.entries(fw).forEach(([word, count]) => {
+        fillerAgg[word] = (fillerAgg[word] || 0) + (count as number);
+      });
+    }
+  });
+  const fillerData = Object.entries(fillerAgg)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([word, count]) => ({ word, count }));
+
+  // Insights based on real data
+  const insights: { icon: typeof Lightbulb; text: string }[] = [];
+  if (totalSessions === 0) {
+    insights.push({ icon: Lightbulb, text: "Complete your first drill in Trainer Mode to start tracking your progress!" });
+  } else {
+    if (totalFillers > 0) {
+      const topFiller = Object.entries(fillerAgg).sort((a, b) => b[1] - a[1])[0];
+      if (topFiller) {
+        insights.push({ icon: Lightbulb, text: `Your most common filler is "${topFiller[0]}" (${topFiller[1]} times). Focus on pausing instead.` });
+      }
+    }
+    if (avgWpm < 100) {
+      insights.push({ icon: Target, text: `Your average pace is ${avgWpm} WPM — try speaking a bit faster. Aim for 120-160 WPM.` });
+    } else if (avgWpm > 180) {
+      insights.push({ icon: Target, text: `Your average pace is ${avgWpm} WPM — that's quite fast. Try slowing down for clarity.` });
+    } else {
+      insights.push({ icon: Target, text: `Great pace! Your average ${avgWpm} WPM is in the ideal conversational range.` });
+    }
+    if (avgClarity < 70) {
+      insights.push({ icon: Zap, text: `Your clarity score is ${avgClarity}/100. Practice the 60-second drill daily to improve.` });
+    } else {
+      insights.push({ icon: Zap, text: `Solid clarity at ${avgClarity}/100! Keep pushing toward 90+.` });
+    }
+  }
+
+  const stats = [
+    { label: "Sessions", value: String(totalSessions), icon: Clock, change: `${completedSessions} completed` },
+    { label: "Avg WPM", value: String(avgWpm), icon: TrendingUp, change: totalSessions > 0 ? "across all drills" : "—" },
+    { label: "Clarity Score", value: String(avgClarity), icon: Target, change: totalSessions > 0 ? "average" : "—" },
+    { label: "Streak", value: streak > 0 ? `${streak} day${streak > 1 ? "s" : ""}` : "0", icon: Zap, change: streak > 0 ? "Keep going!" : "Start today!" },
+  ];
+
   return (
     <div className="space-y-6">
       {/* Stats Grid */}
@@ -95,20 +175,21 @@ export default function Dashboard() {
                 stroke="hsl(var(--primary))"
                 strokeWidth="8"
                 strokeLinecap="round"
-                strokeDasharray={`${85 * 3.267} ${(100 - 85) * 3.267}`}
+                strokeDasharray={`${avgClarity * 3.267} ${(100 - avgClarity) * 3.267}`}
               />
             </svg>
-            <span className="text-3xl font-bold font-display text-foreground">85</span>
+            <span className="text-3xl font-bold font-display text-foreground">{avgClarity}</span>
           </div>
           <div className="text-center sm:text-left">
             <h3 className="font-display text-xl font-bold text-foreground">Overall Clarity Score</h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              Your communication clarity has improved by 5 points this week. Keep practicing
-              to reach your 90-point goal!
+              {totalSessions === 0
+                ? "Complete some drills to see your clarity score here."
+                : `Based on ${totalSessions} session${totalSessions > 1 ? "s" : ""}. ${totalFillers} total filler words detected.`}
             </p>
             <div className="mt-3 flex items-center gap-2">
-              <Progress value={85} className="h-2 flex-1" />
-              <span className="text-xs text-muted-foreground">85/100</span>
+              <Progress value={avgClarity} className="h-2 flex-1" />
+              <span className="text-xs text-muted-foreground">{avgClarity}/100</span>
             </div>
           </div>
         </CardContent>
@@ -118,32 +199,36 @@ export default function Dashboard() {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="glass-card">
           <CardHeader>
-            <CardTitle className="font-display text-base">Pace (WPM) — Last 7 Days</CardTitle>
+            <CardTitle className="font-display text-base">Pace (WPM) — Recent Sessions</CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={paceData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <Tooltip
-                  contentStyle={{
-                    background: "hsl(var(--card))",
-                    border: "1px solid hsl(var(--border))",
-                    borderRadius: "8px",
-                    color: "hsl(var(--foreground))",
-                  }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="wpm"
-                  stroke="hsl(var(--primary))"
-                  strokeWidth={2}
-                  dot={{ fill: "hsl(var(--primary))", r: 4 }}
-                  activeDot={{ r: 6, fill: "hsl(var(--primary))" }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {paceData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={paceData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis dataKey="session" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                  <Tooltip
+                    contentStyle={{
+                      background: "hsl(var(--card))",
+                      border: "1px solid hsl(var(--border))",
+                      borderRadius: "8px",
+                      color: "hsl(var(--foreground))",
+                    }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="wpm"
+                    stroke="hsl(var(--primary))"
+                    strokeWidth={2}
+                    dot={{ fill: "hsl(var(--primary))", r: 4 }}
+                    activeDot={{ r: 6, fill: "hsl(var(--primary))" }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-sm text-muted-foreground text-center py-10">No sessions yet. Start a drill to see data here.</p>
+            )}
           </CardContent>
         </Card>
 
@@ -152,22 +237,26 @@ export default function Dashboard() {
             <CardTitle className="font-display text-base">Top Filler Words Used</CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={fillerData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="word" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <Tooltip
-                  contentStyle={{
-                    background: "hsl(var(--card))",
-                    border: "1px solid hsl(var(--border))",
-                    borderRadius: "8px",
-                    color: "hsl(var(--foreground))",
-                  }}
-                />
-                <Bar dataKey="count" fill="hsl(var(--accent))" radius={[6, 6, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {fillerData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={fillerData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis dataKey="word" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                  <Tooltip
+                    contentStyle={{
+                      background: "hsl(var(--card))",
+                      border: "1px solid hsl(var(--border))",
+                      borderRadius: "8px",
+                      color: "hsl(var(--foreground))",
+                    }}
+                  />
+                  <Bar dataKey="count" fill="hsl(var(--accent))" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-sm text-muted-foreground text-center py-10">No filler words detected yet. Great job — or start a drill!</p>
+            )}
           </CardContent>
         </Card>
       </div>

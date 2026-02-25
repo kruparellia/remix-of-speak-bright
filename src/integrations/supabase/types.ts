@@ -14,7 +14,69 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      drill_sessions: {
+        Row: {
+          ai_coherence: number | null
+          ai_improvements: Json | null
+          ai_quality: number | null
+          ai_relevance: number | null
+          ai_strengths: Json | null
+          ai_summary: string | null
+          clarity_score: number
+          completed: boolean
+          created_at: string
+          difficulty: string
+          duration_seconds: number
+          filler_words: Json
+          id: string
+          pause_count: number
+          topic: string
+          total_fillers: number
+          word_count: number
+          wpm: number
+        }
+        Insert: {
+          ai_coherence?: number | null
+          ai_improvements?: Json | null
+          ai_quality?: number | null
+          ai_relevance?: number | null
+          ai_strengths?: Json | null
+          ai_summary?: string | null
+          clarity_score?: number
+          completed?: boolean
+          created_at?: string
+          difficulty?: string
+          duration_seconds: number
+          filler_words?: Json
+          id?: string
+          pause_count?: number
+          topic: string
+          total_fillers?: number
+          word_count?: number
+          wpm?: number
+        }
+        Update: {
+          ai_coherence?: number | null
+          ai_improvements?: Json | null
+          ai_quality?: number | null
+          ai_relevance?: number | null
+          ai_strengths?: Json | null
+          ai_summary?: string | null
+          clarity_score?: number
+          completed?: boolean
+          created_at?: string
+          difficulty?: string
+          duration_seconds?: number
+          filler_words?: Json
+          id?: string
+          pause_count?: number
+          topic?: string
+          total_fillers?: number
+          word_count?: number
+          wpm?: number
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
