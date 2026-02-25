@@ -60,10 +60,10 @@ export default function AppLayout({ children }: AppLayoutProps) {
           collapsed ? "w-16" : "w-56"
         }`}
       >
-        {/* Logo */}
+      {/* Logo */}
         <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-4">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/15">
-            <Flame className="h-5 w-5 text-primary" />
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary">
+            <Flame className="h-5 w-5 text-primary-foreground" />
           </div>
           {!collapsed && (
             <span className="text-lg font-extrabold text-foreground tracking-tight">
@@ -74,7 +74,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
 
         {/* Streak badge */}
         {!collapsed && (
-          <div className="mx-3 mt-3 flex items-center gap-2 rounded-2xl bg-warning/10 px-3 py-2">
+          <div className="mx-3 mt-3 flex items-center gap-2 rounded-2xl bg-warning/15 px-3 py-2">
             <Star className="h-4 w-4 text-warning" />
             <span className="text-xs font-bold text-warning">7 day streak!</span>
           </div>
@@ -114,7 +114,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
         }`}
       >
         {/* Header */}
-        <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-background/80 backdrop-blur-xl px-6">
+        <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-card/90 backdrop-blur-xl px-6">
           <h2 className="text-base font-extrabold text-foreground">
             {navItems.find((n) => {
               if (n.url === "/") return location.pathname === "/";

@@ -148,7 +148,7 @@ export default function TrainerMode() {
     setState("completed");
 
     if (success) {
-      confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 }, colors: ["#58cc02", "#1cb0f6", "#ff9600"] });
+      confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 }, colors: ["#1c9bf6", "#7c4dff", "#ff9600"] });
     }
   }, [cleanup, buildStats, toast]);
 
