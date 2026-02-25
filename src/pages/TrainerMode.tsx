@@ -4,9 +4,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, Trophy, Zap, Timer, Star, Gauge, MessageSquare, BarChart3, RotateCcw, Pause } from "lucide-react";
+import { Play, Square, Trophy, Zap, Timer, Star, Gauge, MessageSquare, BarChart3, RotateCcw, Pause, Brain, Loader2 } from "lucide-react";
 import confetti from "canvas-confetti";
 import { FillerDetector, type FillerEvent } from "@/lib/filler-detector";
+import { supabase } from "@/integrations/supabase/client";
 import {
   BarChart,
   Bar,
@@ -65,6 +66,15 @@ interface DrillStats {
   segments: TranscriptSegment[];
 }
 
+interface SpeechAnalysis {
+  relevance: number;
+  coherence: number;
+  quality: number;
+  summary: string;
+  strengths: string[];
+  improvements: string[];
+}
+
 export default function TrainerMode() {
   const [difficulty, setDifficulty] = useState<Difficulty>("beginner");
   const [state, setState] = useState<"idle" | "running" | "completed">("idle");
@@ -75,6 +85,8 @@ export default function TrainerMode() {
   const [restarts, setRestarts] = useState(0);
   const [drillStats, setDrillStats] = useState<DrillStats | null>(null);
   const [fillerAlert, setFillerAlert] = useState<string | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<SpeechAnalysis | null>(null);
+  const [analyzingAi, setAnalyzingAi] = useState(false);
 
   const recognitionRef = useRef<any>(null);
   const isListeningRef = useRef(false);
@@ -132,6 +144,23 @@ export default function TrainerMode() {
     };
   }, []);
 
+  const analyzeWithAi = useCallback(async (transcript: string, drillTopic: string) => {
+    if (!transcript || transcript.trim().split(/\s+/).length < 5) return;
+    setAnalyzingAi(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("analyze-speech", {
+        body: { transcript, topic: drillTopic },
+      });
+      if (error) throw error;
+      setAiAnalysis(data as SpeechAnalysis);
+    } catch (e) {
+      console.error("AI analysis failed:", e);
+      toast({ title: "AI analysis unavailable", description: "Could not analyze your speech this time.", variant: "destructive" });
+    } finally {
+      setAnalyzingAi(false);
+    }
+  }, [toast]);
+
   const finishDrill = useCallback((success: boolean, reason?: string) => {
     if (stoppedRef.current) return;
     cleanup();
@@ -147,10 +176,14 @@ export default function TrainerMode() {
     setDrillStats(stats);
     setState("completed");
 
+    // Trigger AI analysis
+    const transcript = finalizedTextRef.current.trim();
+    analyzeWithAi(transcript, topic);
+
     if (success) {
       confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 }, colors: ["#1c9bf6", "#7c4dff", "#ff9600"] });
     }
-  }, [cleanup, buildStats, toast]);
+  }, [cleanup, buildStats, toast, analyzeWithAi, topic]);
 
   const startDrill = useCallback(() => {
     cleanup();
@@ -159,6 +192,8 @@ export default function TrainerMode() {
     setLiveTranscript("");
     setDrillStats(null);
     setFillerAlert(null);
+    setAiAnalysis(null);
+    setAnalyzingAi(false);
     setTimeLeft(duration);
     pickNewTopic();
 
@@ -501,6 +536,66 @@ export default function TrainerMode() {
                     return <span key={i} className="text-secondary-foreground">{seg.text}</span>;
                   })}
                 </div>
+              </CardContent>
+            </Card>
+           )}
+
+          {/* AI Speech Analysis */}
+          {(analyzingAi || aiAnalysis) && (
+            <Card className="glass-card rounded-2xl border-primary/20">
+              <CardContent className="p-5 space-y-4">
+                <span className="text-sm font-bold text-foreground flex items-center gap-2">
+                  <Brain className="h-4 w-4 text-primary" /> AI Speech Analysis
+                </span>
+
+                {analyzingAi ? (
+                  <div className="flex items-center gap-3 py-4 justify-center">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                    <span className="text-sm text-muted-foreground">Analyzing your speech...</span>
+                  </div>
+                ) : aiAnalysis ? (
+                  <div className="space-y-4">
+                    {/* Scores */}
+                    <div className="grid gap-3 grid-cols-3">
+                      {[
+                        { label: "Relevance", value: aiAnalysis.relevance },
+                        { label: "Coherence", value: aiAnalysis.coherence },
+                        { label: "Quality", value: aiAnalysis.quality },
+                      ].map((s) => (
+                        <div key={s.label} className="text-center space-y-1">
+                          <div className={`text-2xl font-extrabold ${s.value >= 70 ? "text-success" : s.value >= 40 ? "text-warning" : "text-destructive"}`}>
+                            {s.value}
+                          </div>
+                          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{s.label}</div>
+                          <Progress value={s.value} className="h-1.5" />
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Summary */}
+                    <p className="text-sm text-foreground bg-secondary/50 rounded-xl p-3">{aiAnalysis.summary}</p>
+
+                    {/* Strengths */}
+                    {aiAnalysis.strengths.length > 0 && (
+                      <div className="space-y-1.5">
+                        <span className="text-xs font-bold text-success uppercase tracking-widest">✅ Strengths</span>
+                        {aiAnalysis.strengths.map((s, i) => (
+                          <p key={i} className="text-xs text-secondary-foreground pl-4">• {s}</p>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Improvements */}
+                    {aiAnalysis.improvements.length > 0 && (
+                      <div className="space-y-1.5">
+                        <span className="text-xs font-bold text-primary uppercase tracking-widest">💡 To Improve</span>
+                        {aiAnalysis.improvements.map((s, i) => (
+                          <p key={i} className="text-xs text-secondary-foreground pl-4">• {s}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
           )}
