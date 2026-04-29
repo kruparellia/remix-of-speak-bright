@@ -1,0 +1,21 @@
+%% UC3 — Analyse Speaking Style
+%% Step numbers match the Main Success Scenario in Section 2.2 exactly.
+
+sequenceDiagram
+    actor U as User
+    participant DV as DashboardView
+    participant AC as AnalysisController
+    participant DR as DataRepository
+    participant AI as AIAnalysisService
+
+    U  ->> DV : 1. clicks "Analyse" on recording
+    DV ->> AC : 2. analyse(recordingId)
+    AC ->> DR : 3. getRecording(recordingId)
+    DR -->> AC : 4. AudioRecording + TranscriptSegments
+    AC ->> AI : 5. analyse(transcript, promptId)
+    AI -->> AC : 6. SpeechAnalysis
+    AC ->> AC : 7. create DrillSession(AudioRecording, SpeechAnalysis)
+    AC ->> DR : 8. saveDrillSession(DrillSession)
+    DR -->> AC : 9. success
+    AC -->> DV : 10. return SpeechAnalysis
+    DV -->> U  : 11. render feedback (fillers, WPM, clarity, relevance, text)

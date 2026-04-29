@@ -1,0 +1,172 @@
+%% SpeakFlow — Class Diagram
+%% Organised as MVC (plus an External service layer for pipe-and-filter data flow).
+%% EVERY association line has:
+%%   - a label describing the association ("uses", "contains", "emits", etc.)
+%%   - a multiplicity on both ends ("1", "0..*", "1..*")
+%% Relationship types:
+%%   *-- composition (owned part)
+%%   o-- aggregation (shared part)
+%%   --> directed association
+%%   ..> dependency (transient, e.g. "returns" or "emits")
+
+classDiagram
+    direction LR
+
+    %% ===================== VIEWS =====================
+    namespace View_Layer {
+        class AppLayoutView {
+            <<View>>
+            -currentRoute : string
+            +navigate(route) void
+        }
+        class TrainerView {
+            <<View>>
+            -currentPrompt : Prompt
+            -liveTranscript : TranscriptSegment[]
+            +onGenerateClick() void
+            +onStartClick() void
+            +onStopClick() void
+            +displayPrompt(Prompt) void
+        }
+        class TeleprompterView {
+            <<View>>
+            -script : string
+            -wpm : int
+            +startScroll() void
+        }
+        class MicroLessonsView {
+            <<View>>
+            -lessons : Lesson[]
+            +openLesson(id) void
+        }
+        class DashboardView {
+            <<View>>
+            -sessions : DrillSession[]
+            +onAnalyseClick(recordingId) void
+            +renderAnalysis(SpeechAnalysis) void
+        }
+    }
+
+    %% ===================== CONTROLLERS =====================
+    namespace Controller_Layer {
+        class PromptController {
+            <<Controller>>
+            +generatePrompt(category) Prompt
+        }
+        class RecordingController {
+            <<Controller>>
+            -currentRecording : AudioRecording
+            +startRecording(promptId) void
+            +stopRecording() string
+            -appendSegment(TranscriptSegment) void
+        }
+        class AnalysisController {
+            <<Controller>>
+            +analyse(recordingId) SpeechAnalysis
+        }
+    }
+
+    %% ===================== MODELS =====================
+    namespace Model_Layer {
+        class Prompt {
+            <<Model>>
+            +id : string
+            +topic : string
+            +category : string
+            +difficulty : string
+        }
+        class AudioRecording {
+            <<Model>>
+            +id : string
+            +userId : string
+            +promptId : string
+            +startedAt : Date
+            +durationMs : int
+        }
+        class TranscriptSegment {
+            <<Model>>
+            +type : string
+            +text : string
+            +timestampMs : int
+        }
+        class SpeechAnalysis {
+            <<Model>>
+            +fillerCount : int
+            +wpm : int
+            +clarityScore : float
+            +relevanceScore : float
+            +feedbackText : string
+        }
+        class DrillSession {
+            <<Model>>
+            +id : string
+            +promptId : string
+            +audioRecordingId : string
+            +createdAt : Date
+        }
+    }
+
+    %% ===================== EXTERNAL / SERVICES =====================
+    namespace External_Services {
+        class MicrophoneService {
+            <<External>>
+            +activate() Stream
+            +deactivate() void
+        }
+        class SpeechRecognitionService {
+            <<External>>
+            +start(lang) void
+            +stop() void
+            +onTranscript(callback) void
+        }
+        class AIAnalysisService {
+            <<External>>
+            +analyse(transcript, promptId) SpeechAnalysis
+        }
+        class DataRepository {
+            <<External>>
+            +fetchRandomPrompt(category) Prompt
+            +saveRecording(rec) string
+            +getRecording(id) AudioRecording
+            +saveDrillSession(ds) void
+        }
+    }
+
+    %% ===================== ASSOCIATIONS =====================
+    %% View composition (AppLayoutView hosts the four page views)
+    AppLayoutView "1" *-- "1" TrainerView        : hosts
+    AppLayoutView "1" *-- "1" DashboardView      : hosts
+    AppLayoutView "1" *-- "1" TeleprompterView   : hosts
+    AppLayoutView "1" *-- "1" MicroLessonsView   : hosts
+
+    %% Views -> Controllers
+    TrainerView     "1" --> "1" PromptController      : uses
+    TrainerView     "1" --> "1" RecordingController   : uses
+    DashboardView   "1" --> "1" AnalysisController    : uses
+
+    %% Controllers -> External services (the "pipe" handoffs)
+    PromptController    "1" --> "1" DataRepository             : reads prompts via
+    RecordingController "1" --> "1" MicrophoneService          : activates
+    RecordingController "1" --> "1" SpeechRecognitionService   : subscribes to
+    RecordingController "1" --> "1" DataRepository             : persists via
+    AnalysisController  "1" --> "1" AIAnalysisService          : sends transcript to
+    AnalysisController  "1" --> "1" DataRepository             : reads/writes via
+
+    %% Controllers -> Models (creation / ownership)
+    PromptController    "1" ..> "1"    Prompt             : returns
+    RecordingController "1" *-- "1"    AudioRecording     : builds
+    AnalysisController  "1" ..> "1"    SpeechAnalysis     : produces
+    AnalysisController  "1" *-- "1"    DrillSession       : builds
+
+    %% Model composition / aggregation
+    AudioRecording "1" *-- "0..*" TranscriptSegment   : contains
+    DrillSession   "1" o-- "1"    SpeechAnalysis      : has
+    DrillSession   "1" --> "1"    AudioRecording      : refers to
+    DrillSession   "1" --> "1"    Prompt              : refers to
+    AudioRecording "1" --> "1"    Prompt              : recorded for
+
+    %% External -> Models (what services emit/return)
+    SpeechRecognitionService ..> TranscriptSegment : emits
+    AIAnalysisService        ..> SpeechAnalysis    : returns
+    DataRepository           ..> Prompt            : returns
+    DataRepository           ..> DrillSession      : stores

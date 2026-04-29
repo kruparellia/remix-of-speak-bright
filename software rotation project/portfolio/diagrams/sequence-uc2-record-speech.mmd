@@ -1,0 +1,29 @@
+%% UC2 — Record Practice Speech
+%% Step numbers match the Main Success Scenario in Section 2.2 exactly.
+
+sequenceDiagram
+    actor U as User
+    participant TV as TrainerView
+    participant RC as RecordingController
+    participant MS as MicrophoneService
+    participant SR as SpeechRecognitionService
+    participant DR as DataRepository
+
+    U  ->> TV : 1. clicks "Start Recording"
+    TV ->> RC : 2. startRecording(promptId)
+    RC ->> MS : 3. activate()
+    MS -->> RC : 4. stream handle (mic active)
+    RC ->> SR : 5. start(lang="en-US")
+
+    loop 6–7. while recording
+        SR -->> RC : 6. TranscriptSegment
+        RC ->> TV : 7. append segment & display live transcript
+    end
+
+    U  ->> TV : 8. clicks "Stop Recording"
+    TV ->> RC : 9. stopRecording()
+    RC ->> SR : 10a. stop()
+    RC ->> MS : 10b. deactivate()
+    RC ->> DR : 11. saveRecording(AudioRecording)
+    DR -->> RC : 12. recordingId
+    RC -->> TV : 13. return recordingId

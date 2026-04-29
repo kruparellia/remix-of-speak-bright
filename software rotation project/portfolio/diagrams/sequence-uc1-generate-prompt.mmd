@@ -1,0 +1,15 @@
+%% UC1 — Generate Speaking Prompt
+%% Step numbers match the Main Success Scenario in Section 2.2 exactly.
+
+sequenceDiagram
+    actor U as User
+    participant TV as TrainerView
+    participant PC as PromptController
+    participant DR as DataRepository
+
+    U  ->> TV : 1. clicks "Generate Prompt"
+    TV ->> PC : 2. generatePrompt()
+    PC ->> DR : 3. fetchRandomPrompt()
+    DR -->> PC : 4. Prompt
+    PC -->> TV : 5. return Prompt
+    TV -->> U  : 6. display Prompt.topic

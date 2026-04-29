@@ -23,7 +23,7 @@ const App = () => (
             <Route path="/" element={<Dashboard />} />
             <Route path="/trainer" element={<TrainerMode />} />
             <Route path="/teleprompter" element={<TeleprompterMode />} />
-            <Route path="/lessons" element={<MicroLessons />} />
+            {/* <Route path="/lessons" element={<MicroLessons />} /> */}
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AppLayout>

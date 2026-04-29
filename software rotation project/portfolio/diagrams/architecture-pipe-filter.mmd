@@ -1,0 +1,28 @@
+%% SpeakFlow — Runtime Architecture (Pipe and Filter)
+%% Data flows left-to-right through a sequence of filters, each doing one transform.
+%% Filters map directly to the classes in the External Services layer of the class diagram.
+
+flowchart LR
+    src([Microphone<br/>audio stream]):::source
+    ui([UI Display<br/>TrainerView / DashboardView]):::sink
+
+    f1[Audio Capture<br/><i>MicrophoneService</i>]:::filter
+    f2[Speech Recognition<br/><i>SpeechRecognitionService</i>]:::filter
+    f3[Text Normaliser<br/><i>RecordingController</i>]:::filter
+    f4[Filler Detector<br/><i>AnalysisController — local</i>]:::filter
+    f5[Metrics Aggregator<br/>WPM + clarity<br/><i>AnalysisController</i>]:::filter
+    f6[AI Analysis<br/><i>AIAnalysisService</i> — Gemini Flash]:::filter
+    f7[Feedback Formatter<br/><i>AnalysisController</i>]:::filter
+    store[(DataRepository<br/>Supabase)]:::store
+
+    src --> f1 --> f2 --> f3
+    f3 -->|live transcript| ui
+    f3 --> f4 --> f5 --> f6 --> f7 --> ui
+    f3 -. write .-> store
+    f6 -. write DrillSession .-> store
+    store -. read for Dashboard .-> ui
+
+    classDef filter fill:#e0f2fe,stroke:#0369a1,stroke-width:2px,color:#0c4a6e;
+    classDef source fill:#fef3c7,stroke:#92400e,stroke-width:2px,color:#78350f;
+    classDef sink fill:#dcfce7,stroke:#166534,stroke-width:2px,color:#14532d;
+    classDef store fill:#fce7f3,stroke:#9f1239,stroke-width:2px,color:#881337;

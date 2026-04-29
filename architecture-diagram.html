@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpeakFlow – Architecture Diagram</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 32px 24px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 6px;
+      background: linear-gradient(135deg, #a78bfa, #60a5fa, #34d399);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #64748b;
+      font-size: 0.9rem;
+      margin-bottom: 40px;
+    }
+
+    /* ── LEGEND ─────────────────────────────────────────── */
+    .legend {
+      display: flex;
+      gap: 24px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 36px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8rem;
+      color: #94a3b8;
+    }
+    .legend-dot {
+      width: 12px; height: 12px;
+      border-radius: 3px;
+    }
+
+    /* ── DIAGRAM WRAPPER ───────────────────────────────── */
+    .diagram {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    /* ── LAYER BAND ────────────────────────────────────── */
+    .layer {
+      border: 1px solid;
+      border-radius: 16px;
+      padding: 20px 24px 24px;
+      position: relative;
+      margin-bottom: 0;
+    }
+
+    .layer-label {
+      position: absolute;
+      top: -13px;
+      left: 24px;
+      background: #0f1117;
+      padding: 0 10px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+    }
+
+    /* colour themes per layer */
+    .layer-browser  { border-color: #3b82f6; }
+    .layer-browser .layer-label { color: #60a5fa; }
+
+    .layer-app      { border-color: #8b5cf6; }
+    .layer-app .layer-label { color: #a78bfa; }
+
+    .layer-backend  { border-color: #10b981; }
+    .layer-backend .layer-label { color: #34d399; }
+
+    .layer-external { border-color: #f59e0b; }
+    .layer-external .layer-label { color: #fbbf24; }
+
+    /* ── CONNECTOR ARROWS between layers ─────────────────── */
+    .connector {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 6px 0;
+      font-size: 0.72rem;
+      color: #64748b;
+    }
+    .connector .line {
+      flex: 1;
+      max-width: 120px;
+      height: 1px;
+      background: repeating-linear-gradient(
+        to right,
+        #334155 0, #334155 6px,
+        transparent 6px, transparent 12px
+      );
+    }
+    .connector .arrow-label {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 3px 12px;
+      white-space: nowrap;
+    }
+
+    /* ── SECTION INSIDE A LAYER ───────────────────────── */
+    .section-row {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .section {
+      flex: 1;
+      min-width: 200px;
+      background: #141824;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+
+    .section-title {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: #475569;
+      margin-bottom: 12px;
+      border-bottom: 1px solid #1e293b;
+      padding-bottom: 8px;
+    }
+
+    /* ── CARDS ──────────────────────────────────────────── */
+    .card-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .card {
+      border-radius: 8px;
+      padding: 9px 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .card-icon {
+      font-size: 1.1rem;
+      line-height: 1.3;
+      flex-shrink: 0;
+    }
+
+    .card-body { flex: 1; }
+
+    .card-name {
+      font-size: 0.83rem;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+
+    .card-desc {
+      font-size: 0.72rem;
+      color: #64748b;
+      margin-top: 2px;
+      line-height: 1.4;
+    }
+
+    /* colour variants */
+    .card-purple { background: #1e1730; border: 1px solid #4c1d95; }
+    .card-purple .card-name { color: #c4b5fd; }
+
+    .card-blue { background: #0f1e36; border: 1px solid #1e40af; }
+    .card-blue .card-name { color: #93c5fd; }
+
+    .card-sky { background: #0c2030; border: 1px solid #0369a1; }
+    .card-sky .card-name { color: #7dd3fc; }
+
+    .card-green { background: #0d2318; border: 1px solid #065f46; }
+    .card-green .card-name { color: #6ee7b7; }
+
+    .card-teal { background: #0b1f1e; border: 1px solid #0f766e; }
+    .card-teal .card-name { color: #5eead4; }
+
+    .card-amber { background: #1f1508; border: 1px solid #78350f; }
+    .card-amber .card-name { color: #fcd34d; }
+
+    .card-slate { background: #141c2a; border: 1px solid #334155; }
+    .card-slate .card-name { color: #cbd5e1; }
+
+    .card-red { background: #1c0c0c; border: 1px solid #7f1d1d; }
+    .card-red .card-name { color: #fca5a5; }
+
+    /* ── DATA FLOW BOX ──────────────────────────────────── */
+    .flow-box {
+      margin-top: 40px;
+      max-width: 1100px;
+      margin-left: auto;
+      margin-right: auto;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      padding: 20px 24px;
+      background: #0d1220;
+    }
+
+    .flow-title {
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: #475569;
+      margin-bottom: 16px;
+    }
+
+    .flow-steps {
+      display: flex;
+      gap: 0;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: center;
+    }
+
+    .flow-step {
+      flex: 1;
+      min-width: 140px;
+      max-width: 180px;
+      text-align: center;
+      position: relative;
+      padding: 0 8px;
+    }
+
+    .flow-step::after {
+      content: '→';
+      position: absolute;
+      right: -8px;
+      top: 22px;
+      color: #334155;
+      font-size: 1.2rem;
+    }
+
+    .flow-step:last-child::after { display: none; }
+
+    .flow-num {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin: 0 auto 8px;
+    }
+
+    .flow-step-name {
+      font-size: 0.78rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .flow-step-desc {
+      font-size: 0.68rem;
+      color: #64748b;
+      line-height: 1.4;
+    }
+
+    .flow-num-1 { background: #312e81; color: #a5b4fc; }
+    .flow-num-2 { background: #1e3a5f; color: #93c5fd; }
+    .flow-num-3 { background: #14532d; color: #86efac; }
+    .flow-num-4 { background: #422006; color: #fcd34d; }
+    .flow-num-5 { background: #450a0a; color: #fca5a5; }
+    .flow-num-6 { background: #064e3b; color: #6ee7b7; }
+
+    /* ── TECH STACK ROW ─────────────────────────────────── */
+    .tech-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .tech-pill {
+      background: #1a2035;
+      border: 1px solid #2d3748;
+      border-radius: 20px;
+      padding: 3px 10px;
+      font-size: 0.7rem;
+      color: #94a3b8;
+    }
+
+    /* ── RESPONSIVE ─────────────────────────────────────── */
+    @media (max-width: 700px) {
+      .section-row { flex-direction: column; }
+      .flow-steps  { flex-direction: column; align-items: center; }
+      .flow-step::after { content: '↓'; right: auto; top: auto; bottom: -20px; left: 50%; transform: translateX(-50%); }
+      .flow-step { max-width: 100%; min-width: unset; width: 100%; margin-bottom: 24px; }
+    }
+  </style>
+</head>
+<body>
+
+<h1>SpeakFlow Architecture</h1>
+<p class="subtitle">Speech training app — React + Supabase + AI-powered analysis</p>
+
+<!-- LEGEND -->
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#8b5cf6"></div> Frontend / UI</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div> Browser APIs</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#10b981"></div> Backend / Database</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div> External Services</div>
+</div>
+
+<div class="diagram">
+
+  <!-- ══════════════ LAYER 1: APP (FRONTEND) ══════════════ -->
+  <div class="layer layer-app">
+    <div class="layer-label">Frontend — React 18 + TypeScript (Vite / SPA)</div>
+
+    <div class="section-row">
+
+      <!-- Pages -->
+      <div class="section" style="flex:1.4">
+        <div class="section-title">Pages (React Router)</div>
+        <div class="card-grid">
+          <div class="card card-purple">
+            <div class="card-icon">📊</div>
+            <div class="card-body">
+              <div class="card-name">Dashboard  <code style="font-size:0.65rem;color:#6b7280">/</code></div>
+              <div class="card-desc">Aggregate stats, WPM line chart, filler bar chart, streak & improvement insights</div>
+            </div>
+          </div>
+          <div class="card card-purple">
+            <div class="card-icon">🎙</div>
+            <div class="card-body">
+              <div class="card-name">TrainerMode  <code style="font-size:0.65rem;color:#6b7280">/trainer</code></div>
+              <div class="card-desc">Timed drills (30 / 60 / 120 s), live transcript, real-time filler detection, AI feedback, session save</div>
+            </div>
+          </div>
+          <div class="card card-purple">
+            <div class="card-icon">📜</div>
+            <div class="card-body">
+              <div class="card-name">TeleprompterMode  <code style="font-size:0.65rem;color:#6b7280">/teleprompter</code></div>
+              <div class="card-desc">Scroll mode + RSVP word-by-word mode, adjustable WPM & font size</div>
+            </div>
+          </div>
+          <div class="card card-purple">
+            <div class="card-icon">📚</div>
+            <div class="card-body">
+              <div class="card-name">MicroLessons  <code style="font-size:0.65rem;color:#6b7280">/lessons</code></div>
+              <div class="card-desc">8 educational card topics (UI only, content placeholder)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Layout & Shared Components -->
+      <div class="section" style="flex:1">
+        <div class="section-title">Layout & Shared Components</div>
+        <div class="card-grid">
+          <div class="card card-blue">
+            <div class="card-icon">🗂</div>
+            <div class="card-body">
+              <div class="card-name">AppLayout</div>
+              <div class="card-desc">Collapsible sidebar nav + top header with mic toggle; wraps all pages</div>
+            </div>
+          </div>
+          <div class="card card-blue">
+            <div class="card-icon">🧩</div>
+            <div class="card-body">
+              <div class="card-name">shadcn/ui (50+ components)</div>
+              <div class="card-desc">Radix UI primitives styled with Tailwind: Card, Dialog, Slider, Progress, Chart wrappers…</div>
+            </div>
+          </div>
+          <div class="card card-blue">
+            <div class="card-icon">📈</div>
+            <div class="card-body">
+              <div class="card-name">Recharts</div>
+              <div class="card-desc">LineChart (WPM over time), BarChart (top filler words)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lib & Hooks -->
+      <div class="section" style="flex:1">
+        <div class="section-title">Business Logic & Hooks</div>
+        <div class="card-grid">
+          <div class="card card-sky">
+            <div class="card-icon">🔊</div>
+            <div class="card-body">
+              <div class="card-name">FillerDetector</div>
+              <div class="card-desc">Frame-by-frame FFT analysis; detects "um/uh/ah" via spectral centroid, flatness & energy stability; 15-sample sliding window, 1.5 s cooldown</div>
+            </div>
+          </div>
+          <div class="card card-sky">
+            <div class="card-icon">🗄</div>
+            <div class="card-body">
+              <div class="card-name">Supabase Client</div>
+              <div class="card-desc">Typed REST queries to <code>drill_sessions</code>; session auto-refresh via localStorage</div>
+            </div>
+          </div>
+          <div class="card card-sky">
+            <div class="card-icon">🪝</div>
+            <div class="card-body">
+              <div class="card-name">useToast / useIsMobile</div>
+              <div class="card-desc">Notification toast hook; responsive breakpoint hook (768 px)</div>
+            </div>
+          </div>
+        </div>
+        <div class="tech-row">
+          <span class="tech-pill">React Query</span>
+          <span class="tech-pill">React Hook Form</span>
+          <span class="tech-pill">Zod</span>
+          <span class="tech-pill">Sonner</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- CONNECTOR -->
+  <div class="connector">
+    <div class="line"></div>
+    <div class="arrow-label">Web Audio API — MediaStream &amp; FFT frames</div>
+    <div class="line"></div>
+    <div class="arrow-label">Web Speech API — speech-to-text events</div>
+    <div class="line"></div>
+  </div>
+
+  <!-- ══════════════ LAYER 2: BROWSER APIs ══════════════ -->
+  <div class="layer layer-browser">
+    <div class="layer-label">Browser APIs (Chrome / Edge)</div>
+
+    <div class="section-row">
+      <div class="section">
+        <div class="section-title">Web Audio API</div>
+        <div class="card-grid">
+          <div class="card card-blue">
+            <div class="card-icon">🎚</div>
+            <div class="card-body">
+              <div class="card-name">AudioContext + AnalyserNode</div>
+              <div class="card-desc">Captures mic stream; provides <code>getByteFrequencyData()</code> + <code>getByteTimeDomainData()</code> on each animation frame → fed into FillerDetector</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Web Speech API</div>
+        <div class="card-grid">
+          <div class="card card-blue">
+            <div class="card-icon">💬</div>
+            <div class="card-body">
+              <div class="card-name">SpeechRecognition</div>
+              <div class="card-desc">Continuous streaming STT; interim &amp; final results → live transcript displayed in TrainerMode; finalized text sent for AI analysis</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONNECTOR -->
+  <div class="connector">
+    <div class="line"></div>
+    <div class="arrow-label">supabase-js — REST insert / select (RLS: anon allowed)</div>
+    <div class="line"></div>
+    <div class="arrow-label">supabase.functions.invoke("analyze-speech")</div>
+    <div class="line"></div>
+  </div>
+
+  <!-- ══════════════ LAYER 3: BACKEND (SUPABASE) ══════════════ -->
+  <div class="layer layer-backend">
+    <div class="layer-label">Backend — Supabase (PostgreSQL + Deno Edge Functions)</div>
+
+    <div class="section-row">
+
+      <!-- Database -->
+      <div class="section" style="flex:1.4">
+        <div class="section-title">PostgreSQL — drill_sessions table</div>
+        <div class="card-grid">
+          <div class="card card-green">
+            <div class="card-icon">📋</div>
+            <div class="card-body">
+              <div class="card-name">Session metadata</div>
+              <div class="card-desc"><code>id</code> · <code>created_at</code> · <code>topic</code> · <code>difficulty</code> · <code>duration_seconds</code> · <code>completed</code></div>
+            </div>
+          </div>
+          <div class="card card-green">
+            <div class="card-icon">📝</div>
+            <div class="card-body">
+              <div class="card-name">Speech metrics</div>
+              <div class="card-desc"><code>word_count</code> · <code>wpm</code> · <code>total_fillers</code> · <code>filler_words (JSON)</code> · <code>pause_count</code> · <code>clarity_score</code></div>
+            </div>
+          </div>
+          <div class="card card-green">
+            <div class="card-icon">🤖</div>
+            <div class="card-body">
+              <div class="card-name">AI scores (written back after analysis)</div>
+              <div class="card-desc"><code>ai_relevance</code> · <code>ai_coherence</code> · <code>ai_quality</code> · <code>ai_summary</code> · <code>ai_strengths</code> · <code>ai_improvements</code></div>
+            </div>
+          </div>
+        </div>
+        <div class="tech-row">
+          <span class="tech-pill">RLS: anon insert / select / update</span>
+          <span class="tech-pill">UUID primary key</span>
+          <span class="tech-pill">Migration via SQL</span>
+        </div>
+      </div>
+
+      <!-- Edge Function -->
+      <div class="section" style="flex:1">
+        <div class="section-title">Edge Function — analyze-speech (Deno)</div>
+        <div class="card-grid">
+          <div class="card card-teal">
+            <div class="card-icon">⚡</div>
+            <div class="card-body">
+              <div class="card-name">analyze-speech</div>
+              <div class="card-desc">Receives <code>{ transcript, topic }</code>; calls Lovable AI Gateway; returns structured <code>SpeechAnalysis</code> JSON (scores + textual feedback)</div>
+            </div>
+          </div>
+          <div class="card card-teal">
+            <div class="card-icon">🔒</div>
+            <div class="card-body">
+              <div class="card-name">Secrets management</div>
+              <div class="card-desc">AI API keys stored server-side; never exposed to browser</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- CONNECTOR -->
+  <div class="connector">
+    <div class="line"></div>
+    <div class="arrow-label">HTTPS — structured tool_choice prompt → JSON response</div>
+    <div class="line"></div>
+  </div>
+
+  <!-- ══════════════ LAYER 4: EXTERNAL SERVICES ══════════════ -->
+  <div class="layer layer-external">
+    <div class="layer-label">External AI Service</div>
+
+    <div class="section-row">
+      <div class="section">
+        <div class="section-title">Lovable AI Gateway</div>
+        <div class="card-grid">
+          <div class="card card-amber">
+            <div class="card-icon">✨</div>
+            <div class="card-body">
+              <div class="card-name">Gemini 2.5 Flash</div>
+              <div class="card-desc">LLM for speech quality analysis; returns relevance, coherence & quality scores + summary, strengths, and improvement suggestions via structured <code>tool_choice</code> output</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /.diagram -->
+
+
+<!-- ══════════════ DATA FLOW ══════════════ -->
+<div class="flow-box">
+  <div class="flow-title">End-to-End Data Flow — Trainer Mode</div>
+  <div class="flow-steps">
+
+    <div class="flow-step">
+      <div class="flow-num flow-num-1">1</div>
+      <div class="flow-step-name" style="color:#a5b4fc">User Starts Drill</div>
+      <div class="flow-step-desc">Selects topic + difficulty; app requests mic permission</div>
+    </div>
+
+    <div class="flow-step">
+      <div class="flow-num flow-num-2">2</div>
+      <div class="flow-step-name" style="color:#93c5fd">Browser APIs Active</div>
+      <div class="flow-step-desc">AudioContext + SpeechRecognition start; FFT frames stream in real-time</div>
+    </div>
+
+    <div class="flow-step">
+      <div class="flow-num flow-num-3">3</div>
+      <div class="flow-step-name" style="color:#86efac">FillerDetector Running</div>
+      <div class="flow-step-desc">Each animation frame analyzed; callbacks fire on filler / silence detection</div>
+    </div>
+
+    <div class="flow-step">
+      <div class="flow-num flow-num-4">4</div>
+      <div class="flow-step-name" style="color:#fcd34d">Drill Completes</div>
+      <div class="flow-step-desc">Stats built (WPM, clarity, filler counts); session record inserted into Supabase</div>
+    </div>
+
+    <div class="flow-step">
+      <div class="flow-num flow-num-5">5</div>
+      <div class="flow-step-name" style="color:#fca5a5">AI Analysis</div>
+      <div class="flow-step-desc">Transcript + topic sent to Edge Function → Gemini 2.5 Flash → structured feedback returned</div>
+    </div>
+
+    <div class="flow-step">
+      <div class="flow-num flow-num-6">6</div>
+      <div class="flow-step-name" style="color:#6ee7b7">Dashboard Updates</div>
+      <div class="flow-step-desc">AI scores written back to DB; Dashboard queries sessions and re-renders charts &amp; insights</div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

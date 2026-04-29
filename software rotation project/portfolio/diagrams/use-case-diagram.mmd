@@ -1,0 +1,23 @@
+%% SpeakFlow — Use Case Diagram
+%% Actors: User (primary), MicrophoneService (secondary/system)
+%% Three core use cases, all inside the SpeakFlow system boundary.
+
+flowchart LR
+    User(["👤 User"])
+    Mic(["🎤 MicrophoneService<br/>(system actor)"])
+
+    subgraph SpeakFlow["SpeakFlow System"]
+        UC1(("UC1<br/>Generate<br/>Speaking Prompt"))
+        UC2(("UC2<br/>Record<br/>Practice Speech"))
+        UC3(("UC3<br/>Analyse<br/>Speaking Style"))
+    end
+
+    User --- UC1
+    User --- UC2
+    User --- UC3
+    UC2 --- Mic
+
+    classDef actor fill:#fef3c7,stroke:#92400e,stroke-width:2px,color:#1f2937
+    classDef usecase fill:#dbeafe,stroke:#1e40af,stroke-width:2px,color:#1e3a8a
+    class User,Mic actor
+    class UC1,UC2,UC3 usecase
