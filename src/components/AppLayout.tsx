@@ -17,10 +17,10 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 
 const navItems = [
-  // { title: "Dashboard", url: "/", icon: BarChart3 },
+  { title: "Dashboard", url: "/", icon: BarChart3 },
   { title: "Trainer", url: "/trainer", icon: Zap },
-  // { title: "Teleprompter", url: "/teleprompter", icon: Monitor },
-  // { title: "Lessons", url: "/lessons", icon: BookOpen },
+  { title: "Teleprompter", url: "/teleprompter", icon: Monitor },
+  { title: "Lessons", url: "/lessons", icon: BookOpen },
 ];
 
 interface AppLayoutProps {
